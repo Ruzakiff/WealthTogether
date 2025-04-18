@@ -59,17 +59,17 @@ def allocate_to_goal(db: Session, allocation_data: GoalAllocation, user_id: str)
     
     # Verify user owns this account
     if account.user_id != user_id:
-        raise HTTPException(status_code=403, detail="You don't have permission to allocate from this account")
+        raise HTTPException(status_code=403, detail=f"User does not own this account")
     
-    # Check if amount is available in the account
+    # Check available funds (account balance minus existing allocations)
     existing_allocations = db.query(AllocationMap).filter(
         AllocationMap.account_id == allocation_data.account_id
     ).all()
     
-    total_allocated = sum(alloc.allocated_amount for alloc in existing_allocations)
-    available_balance = account.balance - total_allocated
+    allocated_sum = sum(alloc.allocated_amount for alloc in existing_allocations)
+    available_balance = account.balance - allocated_sum
     
-    if allocation_data.amount > available_balance:
+    if available_balance < allocation_data.amount:
         raise HTTPException(
             status_code=400, 
             detail=f"Insufficient available funds. Available: {available_balance}, Requested: {allocation_data.amount}"
