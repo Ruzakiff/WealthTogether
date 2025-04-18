@@ -1,0 +1,211 @@
+# Project: CFO Command Center for Couples
+
+## Overview
+This application is a financial coordination platform for couples, designed to help two partners manage shared goals, track allocations from bank accounts, log financial events, and simulate future savings outcomes. It offers a backend-first, API-driven architecture optimized for mobile app integration, agent-based AI assistants, and long-term extensibility.
+
+The system enables:
+- Shared financial goal creation (e.g., Emergency Fund, Japan Trip)
+- Tracking money from joint or individual accounts to those goals
+- A ledger of all financial actions
+- Agent-friendly summaries and forecasts
+- Optional journaling, sync nudges, and emotional reactions
+
+---
+
+## Key Entities (Data Models)
+
+### 1. User
+Represents an individual person using the app.
+- `id`, `email`, `display_name`, `created_at`
+
+### 2. Couple
+A relationship container for two users managing shared finances.
+- `id`, `partner_1_id`, `partner_2_id`, `created_at`
+
+### 3. BankAccount
+Represents a linked or manually created bank account.
+- `id`, `user_id`, `plaid_account_id`, `name`, `balance`, `institution_name`, `is_manual`, `created_at`
+
+### 4. FinancialGoal
+A virtual bucket representing a savings objective.
+- `id`, `couple_id`, `name`, `target_amount`, `type`, `current_allocation`, `priority`, `deadline`, `notes`, `created_at`
+
+### 5. AllocationMap
+Tracks how much of each account is allocated to which goal.
+- `id`, `goal_id`, `account_id`, `allocated_amount`
+
+### 6. LedgerEvent
+Logs all financial transactions and actions.
+- `id`, `event_type`, `amount`, `source_account_id`, `dest_goal_id`, `user_id`, `timestamp`, `metadata`
+
+---
+
+## API Overview (Grouped by Functional Area)
+
+### A. Setup & Initialization
+
+#### `POST /users`
+- Create a user account.
+- Input: `{ email, display_name }`
+- Output: `User`
+
+#### `POST /couples`
+- Create a couple shared context.
+- Input: `{ partner_1_id, partner_2_id }`
+- Output: `Couple`
+
+#### `POST /accounts`
+- Link manual or Plaid-synced account.
+- Input: `{ user_id, name, balance, is_manual, plaid_id? }`
+- Output: `BankAccount`
+
+#### `GET /accounts`
+- List accounts linked to a user or couple.
+
+### B. Goals & Allocation
+
+#### `POST /goals`
+- Create a savings goal.
+- Input: `{ couple_id, name, target_amount, type, priority, deadline }`
+
+#### `GET /goals`
+- List all goals for the couple with current progress.
+
+#### `PUT /goals/{id}`
+- Update goal properties.
+
+#### `POST /goals/allocate`
+- Allocate a portion of an account balance to a goal.
+- Input: `{ account_id, goal_id, amount }`
+- Effect: Updates `AllocationMap`, adjusts `goal.current_allocation`, logs `LedgerEvent`
+
+### C. Ledger & Tracking
+
+#### `POST /ledger/events`
+- Log a financial action manually or via business logic.
+- Types: ALLOCATION, REALLOCATION, DEPOSIT, SYSTEM, etc.
+
+#### `GET /ledger`
+- Retrieve historical ledger events with filters.
+
+### D. AI-Friendly Context & Planning
+
+#### `GET /summary`
+- Return system state for a couple: goals, accounts, recent ledger.
+- Used for GPT hydration and UI dashboards.
+
+#### `POST /forecast/simulate`
+- Simulate how long it will take to complete a goal given a contribution rate.
+
+#### `POST /rebalance/suggest`
+- Recommend how to reallocate funds among goals.
+
+#### `POST /rebalance/commit`
+- Commit a rebalancing plan and update allocations/ledger.
+
+### E. Emotional Layer (Optional Enhancements)
+
+#### `POST /journal`
+- Add a reflective entry or note.
+
+#### `GET /journal`
+- View journal entries for the couple.
+
+#### `POST /goals/react`
+- Emoji/sticker-based feedback on goal progress.
+
+#### `POST /sync/prompts`
+- Schedule or trigger a budgeting check-in.
+
+#### `GET /drift`
+- Identify goals falling behind and alert users.
+
+---
+
+## Backend Design Philosophy
+- Declarative, typed models using SQLAlchemy and Pydantic
+- Separation between API routers, business logic, and data layer
+- All major operations are logged via `LedgerEvent`
+- Agent-compatible design: `GET /summary` returns single-call hydration
+- Modular goal/account structure supports soft partitioning and rebalancing
+
+---
+
+## Next Build Milestones
+
+1. **Phase 1**
+   - `POST /users`, `/couples`, `/goals`, `/accounts`
+   - `POST /goals/allocate`
+   - `GET /goals`, `/accounts`
+
+2. **Phase 2**
+   - `/ledger` (create + read)
+   - Enforce allocation constraints + traceability
+
+3. **Phase 3**
+   - `GET /summary`, `/rebalance/suggest`, `/rebalance/commit`, `/forecast/simulate`
+
+4. **Phase 4** (optional)
+   - Journaling, reactions, sync nudges, drift detection
+
+---
+
+## Integration Targets
+- iOS SwiftUI frontend (client will consume OpenAPI schema)
+- GPT agents via LangChain Tool interface (using `/summary`, `/rebalance/*`, `/goals`)
+- Slack/Discord bot interface possible via REST
+
+---
+
+## Vision
+This is not just a finance tracker — it’s a life-aligned, emotional-aware command center to help couples co-pilot their goals, wealth, and relationship health over time.
+
+backend/
+├── app/                        # Main application package
+│   ├── __init__.py
+│   ├── main.py                 # FastAPI application instance and startup
+│   ├── database.py             # Database connection, session management
+│   ├── config.py               # Configuration management (env vars, settings)
+│   ├── models/                 # Database models
+│   │   ├── __init__.py
+│   │   └── models.py           # Your existing SQLAlchemy models
+│   ├── schemas/                # Pydantic schemas/models for request/response
+│   │   ├── __init__.py
+│   │   ├── users.py            # User-related schemas
+│   │   ├── couples.py
+│   │   ├── goals.py
+│   │   └── ...
+│   ├── api/                    # API routers organized by feature
+│   │   ├── __init__.py
+│   │   ├── v1/                 # Version 1 of your API
+│   │   │   ├── __init__.py
+│   │   │   ├── router.py       # Main router that includes all sub-routers
+│   │   │   ├── users.py        # User endpoints (your create.py content goes here)
+│   │   │   ├── couples.py      # Couple endpoints
+│   │   │   ├── goals.py        # Goal endpoints
+│   │   │   ├── accounts.py     # Bank account endpoints
+│   │   │   ├── ledger.py       # Ledger endpoints
+│   │   │   └── ...
+│   ├── services/               # Business logic layer
+│   │   ├── __init__.py
+│   │   ├── user_service.py
+│   │   ├── goal_service.py
+│   │   └── ...
+│   └── core/                   # Core application components
+│       ├── __init__.py
+│       ├── security.py         # Authentication, authorization
+│       └── exceptions.py       # Custom exceptions
+├── alembic/                    # Database migrations (optional)
+│   ├── versions/
+│   ├── env.py
+│   └── ...
+├── tests/                      # Test directory
+│   ├── __init__.py
+│   ├── conftest.py
+│   ├── test_users.py
+│   └── ...
+├── .env                        # Environment variables (not in git)
+├── .env.example                # Example environment variables (in git)
+├── requirements.txt            # Python dependencies
+├── Dockerfile                  # For containerization
+└── README.md                   # Project documentation
