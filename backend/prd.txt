@@ -6,9 +6,14 @@ This application is a financial coordination platform for couples, designed to h
 The system enables:
 - Shared financial goal creation (e.g., Emergency Fund, Japan Trip)
 - Tracking money from joint or individual accounts to those goals
+- Automatic transaction syncing and AI-powered categorization
+- Budget tracking and spending analysis
 - A ledger of all financial actions
 - Agent-friendly summaries and forecasts
-- Optional journaling, sync nudges, and emotional reactions
+- Optional journaling, sync nudges, emotional reactions, and relationship health tracking
+- Lifestyle simulation tools and trust-sensitive privacy modes
+- Safe-to-spend comfort zones
+- Partner approval flows and automatic allocation rules
 
 ---
 
@@ -37,6 +42,110 @@ Tracks how much of each account is allocated to which goal.
 ### 6. LedgerEvent
 Logs all financial transactions and actions.
 - `id`, `event_type`, `amount`, `source_account_id`, `dest_goal_id`, `user_id`, `timestamp`, `metadata`
+
+### 7. Transaction
+Represents a financial transaction from a connected account.
+- `id`, `account_id`, `amount`, `description`, `merchant_name`, `date`, `category_id`, `is_pending`, `plaid_transaction_id`, `created_at`
+
+### 8. Category
+Defines transaction categories for classification and budgeting.
+- `id`, `name`, `parent_category_id`, `icon`, `created_at`
+
+### 9. Budget
+Defines spending limits for specific categories.
+- `id`, `couple_id`, `category_id`, `amount`, `period` (monthly, weekly, etc.), `start_date`, `created_at`
+
+### 10. JournalEntry
+Records reflections, celebrations, or concerns.
+- `id`, `user_id`, `couple_id`, `entry_type` ["reflection", "celebration", "concern"], `content`, `timestamp`
+
+### 11. GoalReaction
+Emotional responses to goal progress.
+- `id`, `user_id`, `goal_id`, `reaction_type`, `note`, `timestamp`
+
+### 12. SyncPrompt
+Scheduled or triggered financial check-ins.
+- `id`, `couple_id`, `type` ["monthly_review", "budget_checkin", "goal_rebalance"], `triggered_by`, `message`, `resolved`, `timestamp`
+
+### 13. DriftFlag
+Alerts for neglected goals or financial issues.
+- `id`, `couple_id`, `goal_id` (optional), `reason`, `triggered_at`, `resolved`
+
+### 14. SpendingComfortProfile
+Personalized spending boundaries.
+- `id`, `user_id`, `couple_id`, `base_weekly_amount`, `adaptive_mode`, `emotional_floor`, `visibility_to_partner`, `created_at`
+
+### 15. IncomeStream (optional)
+Tracks regular income sources.
+- `id`, `user_id`, `amount`, `frequency` ["monthly", "biweekly", "irregular"], `source`, `start_date`
+
+### 16. VisibilityScope (optional)
+Controls privacy settings for entities.
+- `id`, `entity_type` ["goal", "account"], `entity_id`, `visible_to_partner`, `shared_progress_only`
+
+### 17. AutoAllocationRule
+Automated fund distribution rules.
+- `id`, `user_id`, `source_account_id`, `goal_id`, `percent`, `trigger` ["deposit", "schedule"]
+
+### 18. PendingApproval
+Partner approval workflow for financial actions.
+- `id`, `couple_id`, `initiated_by`, `action_type`, `payload`, `status` ["pending", "approved", "rejected"], `created_at`
+
+---
+
+## Feature Expansion (First Principles / 4th-Layer-Aware)
+
+### 🌱 Safe-to-Spend Zones
+- Personalized, adaptive spending boundaries with emotional floor protection
+- Visualized comfort zones with partner visibility controls
+
+### ❤️ Relationship Health Tracker
+- Sync participation, friction logs, and conflict risk modeling
+- AI detects silence and recommends low-friction reconnection
+
+### 📊 Lifestyle Simulation
+- Role changes: quitting job, moving cities, childcare cost projections
+- Timeline & cushion impacts visualized
+
+### 🤝 Couple-as-a-Company Mode
+- Contribution ledger, equity drift detector, rebalancing suggestions
+- Optional "soft ledger" mode with delayed reconciliation
+
+### 🌈 Visual Dreamboard + Anchored Goals
+- Long-term goals tied to images, GIFs, emotional notes
+- GPT reminds users of dream proximity: "2 weeks from your ramen tour 🍜"
+
+### 💬 Budgeting Date Rituals
+- Guided session with prompts, charts, emotional check-ins
+- Companion animal reacts to tone + nudges next sync
+
+### 🛡️ Privacy Modes
+- Granular sharing preferences per goal/account
+- Shared progress vs hidden transaction detail toggle
+
+### 🧠 GPT Digest & Summaries
+- Narrated financial progress via GPT-4o in couple-friendly tone
+- Monthly postcard: "Together you saved $1,070 and got 2 weeks closer to Japan 💼✈️"
+
+### 👍 Partner Approval Flows
+- Soft-committed changes pending partner confirmation
+- Notification and approval UI for major financial decisions
+
+### 🔄 Auto Allocation Rules
+- Passive envelope budgeting with percentage-based rules
+- Trigger-based allocations (deposits, schedules)
+
+### 🎁 Treat Funds
+- Guilt-free "fun" sub-buckets with optional summary exclusion
+- Partner-invisible personal spending zones
+
+### 😕 "I Feel Off" Button
+- Frictionless reflection entry triggers GPT wellness prompt
+- Emotional state tracking with financial context
+
+### ⏱️ Timeline Feed
+- Unified couple activity log across goals, journaling, and reactions
+- Shareable milestones and celebration moments
 
 ---
 
@@ -103,7 +212,48 @@ Logs all financial transactions and actions.
 #### `POST /rebalance/commit`
 - Commit a rebalancing plan and update allocations/ledger.
 
-### E. Emotional Layer (Optional Enhancements)
+### E. Transactions & Categorization
+
+#### `POST /plaid/link`
+- Generate a Plaid Link token to initiate account linking.
+- Output: `{ link_token }`
+
+#### `POST /plaid/exchange`
+- Exchange a public token for access tokens and initialize account sync.
+- Input: `{ public_token, metadata }`
+- Effect: Creates accounts and begins transaction sync
+
+#### `GET /transactions`
+- Retrieve transactions with optional filtering by account, date range, category.
+- Query params: `account_id?`, `start_date?`, `end_date?`, `category_id?`
+
+#### `POST /transactions/categorize`
+- Manually categorize a transaction.
+- Input: `{ transaction_id, category_id }`
+
+#### `POST /transactions/sync`
+- Manual trigger to sync recent transactions from connected accounts.
+- Input: `{ user_id }`
+
+### F. Budgeting & Analysis
+
+#### `POST /budgets`
+- Create a budget for a specific category.
+- Input: `{ couple_id, category_id, amount, period, start_date }`
+
+#### `GET /budgets`
+- Get all budgets for a couple.
+- Query params: `couple_id`
+
+#### `GET /budgets/analysis`
+- Get analysis of budget performance.
+- Query params: `couple_id`, `period?` (current_month, last_month, etc.)
+
+#### `GET /ai/insights`
+- Get AI-generated insights about spending patterns and recommendations.
+- Query params: `couple_id`, `timeframe?` (last_30_days, last_3_months, etc.)
+
+### G. Emotional Layer
 
 #### `POST /journal`
 - Add a reflective entry or note.
@@ -120,6 +270,38 @@ Logs all financial transactions and actions.
 #### `GET /drift`
 - Identify goals falling behind and alert users.
 
+#### `POST /journal/concern`
+- Log a financial concern or anxiety.
+
+#### `GET /timeline`
+- Get unified activity feed across goals, journal entries, and reactions.
+
+#### `GET /timeline/summary`
+- Get AI-summarized timeline highlights.
+
+### H. Advanced Controls
+
+#### `GET /comfort_zone`
+- Get spending comfort zone information.
+
+#### `POST /allocation_rules`
+- Create automatic allocation rules.
+
+#### `GET /allocation_rules`
+- List existing allocation rules.
+
+#### `DELETE /allocation_rules/{id}`
+- Remove an allocation rule.
+
+#### `POST /approvals`
+- Create a pending approval request.
+
+#### `GET /approvals`
+- List pending approvals.
+
+#### `POST /visibility_scope`
+- Set visibility preferences for an entity.
+
 ---
 
 ## Backend Design Philosophy
@@ -128,12 +310,24 @@ Logs all financial transactions and actions.
 - All major operations are logged via `LedgerEvent`
 - Agent-compatible design: `GET /summary` returns single-call hydration
 - Modular goal/account structure supports soft partitioning and rebalancing
+- Automatic transaction syncing with minimal user intervention
+- AI-powered categorization to reduce manual tagging
+- Intelligent budget tracking with predictive capabilities
+- Privacy-focused design that keeps financial data secure
+ Modular, router-based FastAPI architecture
+- Ledger-driven mutation logging for AI traceability
+- Agent-first hydration patterns (GET /summary)
+- Clear separation between physical (bank) and logical (goal) money
+- Emotion-aware schema for relational insights
+- Future-compatible: Slack bot, GPT assistant, SwiftUI integration
+- Multi-surface sync logic: mobile, voice, chatbot, assistant
+- Fully dockerizable, dev/stage/prod-ready
 
 ---
 
 ## Next Build Milestones
 
-1. **Phase 1**
+1. **Phase 1** ✅
    - `POST /users`, `/couples`, `/goals`, `/accounts`
    - `POST /goals/allocate`
    - `GET /goals`, `/accounts`
@@ -142,23 +336,42 @@ Logs all financial transactions and actions.
    - `/ledger` (create + read)
    - Enforce allocation constraints + traceability
 
-3. **Phase 3**
+3. **Phase 2.5**
+   - Plaid integration for account linking
+   - Transaction syncing and storage
+   - Basic categorization
+
+4. **Phase 3**
    - `GET /summary`, `/rebalance/suggest`, `/rebalance/commit`, `/forecast/simulate`
 
-4. **Phase 4** (optional)
-   - Journaling, reactions, sync nudges, drift detection
+5. **Phase 3.5**
+   - `POST /budgets`
+   - `GET /budgets`, `/budgets/analysis`
+   - `GET /ai/insights`
+   - `POST /comfort_zone`
+
+6. **Phase 4**
+   - Emotional layer: `/journal`, `/goals/react`, `/sync/prompts`, `/drift`
+   - GPT digest + timeline aggregation
+   - Partner approvals, visibility scope, auto allocation rules
+   - "I feel off" flow
+   - Treat fund exclusions from summary
 
 ---
 
 ## Integration Targets
-- iOS SwiftUI frontend (client will consume OpenAPI schema)
-- GPT agents via LangChain Tool interface (using `/summary`, `/rebalance/*`, `/goals`)
-- Slack/Discord bot interface possible via REST
+- iOS SwiftUI frontend (OpenAPI-driven)
+- GPT agent interfaces via LangChain tools
+- REST API for Slack, Discord bots
+- Plaid for account/transaction sync
+- OpenAI/Claude for categorization and tone-aware summary
+- Twilio for reminders and nudges (optional)
+- Google Cloud or AWS for deployment + ML pipeline hosting
 
 ---
 
 ## Vision
-This is not just a finance tracker — it’s a life-aligned, emotional-aware command center to help couples co-pilot their goals, wealth, and relationship health over time.
+This is not just a finance tracker — it's a life-aligned, emotional-aware command center to help couples co-pilot their goals, wealth, and relationship health over time.
 
 backend/
 ├── app/                        # Main application package
