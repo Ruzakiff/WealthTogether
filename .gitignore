@@ -2,3 +2,10 @@
 .env
 *.txt
 *.md
+__pycache__
+venv/
+.DS_Store
+.vscode/
+.idea/
+.pytest_cache/
+.ruff_cache/
