@@ -94,7 +94,7 @@ class LedgerEvent(Base):
     dest_goal_id = Column(String, ForeignKey("financial_goals.id"), nullable=True)
     user_id = Column(String, ForeignKey("users.id"))
     timestamp = Column(DateTime, default=datetime.utcnow)
-    metadata = Column(JSON, nullable=True)
+    event_metadata = Column(JSON, nullable=True)
 
 class SyncPrompt(Base):
     __tablename__ = "sync_prompts"
