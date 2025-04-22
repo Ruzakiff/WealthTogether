@@ -91,6 +91,14 @@ Automated fund distribution rules.
 Partner approval workflow for financial actions.
 - `id`, `couple_id`, `initiated_by`, `action_type`, `payload`, `status` ["pending", "approved", "rejected"], `created_at`
 
+### 19. SpendingChallenge
+Tracks "no-spend" and other spending reduction challenges.
+- `id`, `couple_id`, `title`, `description`, `challenge_type` ["no_spend", "reduction", "custom"], `category_id`, `start_date`, `end_date`, `target_amount`, `status`, `created_at`
+
+### 20. WishlistItem
+Future purchase planning items.
+- `id`, `couple_id`, `user_id`, `title`, `description`, `estimated_cost`, `target_date`, `priority`, `status` ["planned", "saving", "purchased"], `created_at`
+
 ---
 
 ## Feature Expansion (First Principles / 4th-Layer-Aware)
@@ -146,6 +154,31 @@ Partner approval workflow for financial actions.
 ### ⏱️ Timeline Feed
 - Unified couple activity log across goals, journaling, and reactions
 - Shareable milestones and celebration moments
+
+### 🏆 No-Spend Challenges
+- Create time-limited challenges to avoid spending in specific categories
+- Gamified progress tracking with celebratory notifications
+- Partner accountability with shared visibility
+
+### 📊 Monthly Surplus Management
+- End-of-month calculations showing income minus spending
+- Automated distribution of surplus to multiple savings goals based on percentages
+- Uses existing ledger and allocation systems for tracking
+
+### 📱 Enhanced Dashboard
+- Home screen with real-time budget status and spending by category
+- Visual goal progress tracking with transfer history
+- Key metrics and quick actions for common tasks
+
+### 🛒 Wishlist & Future Purchase Planner
+- Track specific future purchases with estimated costs and timelines
+- Link wishlist items to specific savings goals
+- Prioritization and status tracking
+
+### 🤖 AI Budget Optimization
+- Machine learning suggestions for budget adjustments based on spending patterns
+- Anomaly detection for unusual spending
+- Personalized efficiency recommendations
 
 ---
 
@@ -302,6 +335,36 @@ Partner approval workflow for financial actions.
 #### `POST /visibility_scope`
 - Set visibility preferences for an entity.
 
+### I. Challenges & Wishlist
+
+#### `POST /challenges`
+- Create a new spending challenge.
+- Input: `{ couple_id, title, description, challenge_type, category_id, start_date, end_date, target_amount }`
+
+#### `GET /challenges`
+- List all challenges for a couple.
+- Query params: `couple_id`, `status?` (active, completed, etc.)
+
+#### `POST /wishlist`
+- Add item to wishlist/purchase planner.
+- Input: `{ couple_id, user_id, title, description, estimated_cost, target_date, priority }`
+
+#### `GET /wishlist`
+- Get all wishlist items.
+- Query params: `couple_id`, `status?`
+
+### J. Enhanced Budget & Allocation
+
+#### `POST /surplus/calculate`
+- Calculate and optionally distribute monthly surplus.
+- Input: `{ couple_id, month, year, distributions: [{ goal_id, percentage }] }`
+- Effect: Creates LedgerEvents for each allocation and updates goal balances
+
+#### `GET /dashboard`
+- Get comprehensive dashboard data in a single call.
+- Query params: `couple_id`
+- Output: Budget status, spending breakdown, goal progress, challenges, recent activity
+
 ---
 
 ## Backend Design Philosophy
@@ -322,6 +385,11 @@ Partner approval workflow for financial actions.
 - Future-compatible: Slack bot, GPT assistant, SwiftUI integration
 - Multi-surface sync logic: mobile, voice, chatbot, assistant
 - Fully dockerizable, dev/stage/prod-ready
+- Biometric and secure authentication options
+- Gamification engine with challenge tracking and rewards
+- Intelligent surplus management with rules-based allocation
+- Comprehensive dashboard data aggregation
+- Machine learning pipeline for budget optimization
 
 ---
 
@@ -356,6 +424,13 @@ Partner approval workflow for financial actions.
    - Partner approvals, visibility scope, auto allocation rules
    - "I feel off" flow
    - Treat fund exclusions from summary
+
+7. **Phase 5**
+   - No-Spend Challenges
+   - Enhanced Monthly Surplus Management
+   - Wishlist & Future Purchase Planner
+   - AI Budget Optimization
+   - Enhanced Dashboard & Analytics
 
 ---
 
