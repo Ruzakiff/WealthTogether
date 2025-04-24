@@ -5,9 +5,9 @@ from enum import Enum
 
 from pydantic import BaseModel
 from sqlalchemy import (
-    Column, String, Integer, DateTime, Float, Boolean, ForeignKey, Enum as PgEnum, JSON
+    Column, String, Integer, DateTime, Float, Boolean, ForeignKey, Enum as PgEnum, JSON, Table, Date
 )
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
 
@@ -64,6 +64,7 @@ class BankAccount(Base):
     institution_name = Column(String, nullable=True)
     is_manual = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    transactions = relationship("Transaction", back_populates="account")
 
 class FinancialGoal(Base):
     __tablename__ = "financial_goals"
@@ -149,3 +150,34 @@ class GoalReaction(Base):
     reaction_type = Column(String)  # emoji or stamp identifier
     note = Column(String, nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
+
+class Category(Base):
+    __tablename__ = "categories"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    name = Column(String, nullable=False)
+    parent_category_id = Column(String, ForeignKey("categories.id"), nullable=True)
+    icon = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    parent_category = relationship("Category", remote_side=[id], backref="subcategories")
+    transactions = relationship("Transaction", back_populates="category")
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    account_id = Column(String, ForeignKey("bank_accounts.id"), nullable=False)
+    amount = Column(Float, nullable=False)
+    description = Column(String, nullable=False)
+    merchant_name = Column(String, nullable=True)
+    date = Column(Date, nullable=False)
+    category_id = Column(String, ForeignKey("categories.id"), nullable=True)
+    is_pending = Column(Boolean, default=False)
+    plaid_transaction_id = Column(String, nullable=True, unique=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    account = relationship("BankAccount", back_populates="transactions")
+    category = relationship("Category", back_populates="transactions")

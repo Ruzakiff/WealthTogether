@@ -4,6 +4,7 @@ import json
 from typing import Dict, Any, Optional
 import os
 import sys
+from datetime import date
 
 BASE_URL = "http://localhost:8000/api/v1"
 
@@ -13,7 +14,9 @@ STORED_IDS = {
     "couples": {},
     "accounts": {},
     "goals": {},
-    "ledger_events": {}
+    "ledger_events": {},
+    "categories": {},
+    "transactions": {}
 }
 
 def clear_screen():
@@ -495,6 +498,280 @@ def list_ledger_events():
     
     input("\nPress Enter to continue...")
 
+# Transaction operations
+def create_transaction():
+    print_header("Create Transaction")
+    
+    if not STORED_IDS["accounts"]:
+        print("You need to create an account first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("Available accounts:")
+    for name, id in STORED_IDS["accounts"].items():
+        print(f"  - {name}: {id}")
+    
+    account_name = get_input("Select account (name)")
+    
+    if account_name not in STORED_IDS["accounts"]:
+        print("Account name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    amount = get_input("Amount", "50.00")
+    description = get_input("Description", "Test Transaction")
+    merchant = get_input("Merchant Name (optional)")
+    transaction_date = get_input("Date (YYYY-MM-DD)", date.today().isoformat())
+    is_pending = get_input("Is Pending (true/false)", "false").lower() == "true"
+    
+    data = {
+        "account_id": STORED_IDS["accounts"][account_name],
+        "amount": float(amount),
+        "description": description,
+        "date": transaction_date,
+        "is_pending": is_pending
+    }
+    
+    if merchant:
+        data["merchant_name"] = merchant
+    
+    # Optional category if we have categories
+    if STORED_IDS["categories"]:
+        include_category = get_input("Include category? (y/n)", "n").lower() == "y"
+        if include_category:
+            print("\nAvailable categories:")
+            for name, id in STORED_IDS["categories"].items():
+                print(f"  - {name}: {id}")
+            
+            category_name = get_input("Select category (name)")
+            if category_name in STORED_IDS["categories"]:
+                data["category_id"] = STORED_IDS["categories"][category_name]
+    
+    result = make_request("post", "/transactions", data)
+    if result and "id" in result:
+        trans_name = f"{account_name} - {description} (${amount})"
+        STORED_IDS["transactions"][trans_name] = result["id"]
+        print(f"\nStored transaction ID for {trans_name}: {result['id']}")
+    
+    input("\nPress Enter to continue...")
+
+def list_transactions():
+    print_header("List Transactions")
+    
+    filter_type = get_input("Filter by account or user? (account/user)", "account")
+    
+    if filter_type.lower() == "account":
+        if not STORED_IDS["accounts"]:
+            print("You need to create an account first.")
+            input("\nPress Enter to continue...")
+            return
+        
+        print("Available accounts:")
+        for name, id in STORED_IDS["accounts"].items():
+            print(f"  - {name}: {id}")
+        
+        account_name = get_input("Select account (name)")
+        
+        if account_name not in STORED_IDS["accounts"]:
+            print("Account name not found.")
+            input("\nPress Enter to continue...")
+            return
+        
+        params = {"account_id": STORED_IDS["accounts"][account_name]}
+    
+    else:  # user
+        if not STORED_IDS["users"]:
+            print("You need to create a user first.")
+            input("\nPress Enter to continue...")
+            return
+        
+        print("Available users:")
+        for name, id in STORED_IDS["users"].items():
+            print(f"  - {name}: {id}")
+        
+        user_name = get_input("Select user (name)")
+        
+        if user_name not in STORED_IDS["users"]:
+            print("User name not found.")
+            input("\nPress Enter to continue...")
+            return
+        
+        params = {"user_id": STORED_IDS["users"][user_name]}
+    
+    # Optional date filtering
+    add_dates = get_input("Add date filtering? (y/n)", "n").lower() == "y"
+    if add_dates:
+        start_date = get_input("Start date (YYYY-MM-DD)", (date.today().replace(day=1)).isoformat())
+        end_date = get_input("End date (YYYY-MM-DD)", date.today().isoformat())
+        params["start_date"] = start_date
+        params["end_date"] = end_date
+    
+    # Optional category filtering
+    if STORED_IDS["categories"] and filter_type.lower() == "user":
+        add_category = get_input("Filter by category? (y/n)", "n").lower() == "y"
+        if add_category:
+            print("\nAvailable categories:")
+            for name, id in STORED_IDS["categories"].items():
+                print(f"  - {name}: {id}")
+            
+            category_name = get_input("Select category (name)")
+            if category_name in STORED_IDS["categories"]:
+                params["category_id"] = STORED_IDS["categories"][category_name]
+    
+    make_request("get", "/transactions", params=params)
+    input("\nPress Enter to continue...")
+
+def categorize_transaction():
+    print_header("Categorize Transaction")
+    
+    if not STORED_IDS["transactions"]:
+        print("You need to create a transaction first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    if not STORED_IDS["categories"]:
+        print("You need to create categories first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("Available transactions:")
+    for name, id in STORED_IDS["transactions"].items():
+        print(f"  - {name}: {id}")
+    
+    trans_name = get_input("Select transaction (name)")
+    
+    if trans_name not in STORED_IDS["transactions"]:
+        print("Transaction name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("\nAvailable categories:")
+    for name, id in STORED_IDS["categories"].items():
+        print(f"  - {name}: {id}")
+    
+    category_name = get_input("Select category (name)")
+    
+    if category_name not in STORED_IDS["categories"]:
+        print("Category name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    # We need a user ID for the categorization
+    if not STORED_IDS["users"]:
+        print("You need to create a user first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("\nAvailable users:")
+    for name, id in STORED_IDS["users"].items():
+        print(f"  - {name}: {id}")
+    
+    user_name = get_input("Select user (name)")
+    
+    if user_name not in STORED_IDS["users"]:
+        print("User name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    data = {
+        "transaction_id": STORED_IDS["transactions"][trans_name],
+        "category_id": STORED_IDS["categories"][category_name]
+    }
+    
+    params = {"user_id": STORED_IDS["users"][user_name]}
+    
+    make_request("post", "/transactions/categorize", data, params)
+    input("\nPress Enter to continue...")
+
+# Category operations
+def create_category():
+    print_header("Create Category")
+    
+    name = get_input("Category Name")
+    icon = get_input("Icon (optional)")
+    
+    data = {
+        "name": name
+    }
+    
+    if icon:
+        data["icon"] = icon
+    
+    # If we have existing categories, ask if this is a subcategory
+    if STORED_IDS["categories"]:
+        is_subcategory = get_input("Is this a subcategory? (y/n)", "n").lower() == "y"
+        if is_subcategory:
+            print("\nAvailable parent categories:")
+            for name, id in STORED_IDS["categories"].items():
+                print(f"  - {name}: {id}")
+            
+            parent_name = get_input("Select parent category (name)")
+            if parent_name in STORED_IDS["categories"]:
+                data["parent_category_id"] = STORED_IDS["categories"][parent_name]
+    
+    result = make_request("post", "/categories", data)
+    if result and "id" in result:
+        STORED_IDS["categories"][result["name"]] = result["id"]
+        print(f"\nStored category ID for {result['name']}: {result['id']}")
+    
+    input("\nPress Enter to continue...")
+
+def list_categories():
+    print_header("List Categories")
+    
+    filter_type = get_input("Filter categories? (all/top-level/subcategories)", "all")
+    
+    params = {}
+    
+    if filter_type.lower() == "top-level":
+        params["top_level_only"] = "true"
+    elif filter_type.lower() == "subcategories":
+        if not STORED_IDS["categories"]:
+            print("You need to create categories first.")
+            input("\nPress Enter to continue...")
+            return
+        
+        print("Available categories:")
+        for name, id in STORED_IDS["categories"].items():
+            print(f"  - {name}: {id}")
+        
+        parent_name = get_input("Select parent category (name)")
+        
+        if parent_name not in STORED_IDS["categories"]:
+            print("Category name not found.")
+            input("\nPress Enter to continue...")
+            return
+        
+        params["parent_id"] = STORED_IDS["categories"][parent_name]
+    
+    make_request("get", "/categories", params=params)
+    input("\nPress Enter to continue...")
+
+# Plaid operations
+def generate_link_token():
+    print_header("Generate Plaid Link Token")
+    
+    if not STORED_IDS["users"]:
+        print("You need to create a user first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("Available users:")
+    for name, id in STORED_IDS["users"].items():
+        print(f"  - {name}: {id}")
+    
+    user_name = get_input("Select user (name)")
+    
+    if user_name not in STORED_IDS["users"]:
+        print("User name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    params = {"user_id": STORED_IDS["users"][user_name]}
+    
+    make_request("post", "/plaid/link", None, params)
+    input("\nPress Enter to continue...")
+
 def main_menu():
     while True:
         print_header("CFO Command Center Test Client")
@@ -504,6 +781,9 @@ def main_menu():
         print("3. Bank Accounts")
         print("4. Financial Goals")
         print("5. Ledger Events")
+        print("6. Transactions")
+        print("7. Categories")
+        print("8. Plaid Integration")
         print("0. Exit")
         
         choice = get_input("\nEnter your choice")
@@ -594,6 +874,54 @@ def main_menu():
                     create_ledger_event()
                 elif ledger_choice == "2":
                     list_ledger_events()
+        
+        elif choice == "6":
+            while True:
+                print_header("Transaction Operations")
+                print("1. Create Transaction")
+                print("2. List Transactions")
+                print("3. Categorize Transaction")
+                print("0. Back to Main Menu")
+                
+                transaction_choice = get_input("\nEnter your choice")
+                
+                if transaction_choice == "0":
+                    break
+                elif transaction_choice == "1":
+                    create_transaction()
+                elif transaction_choice == "2":
+                    list_transactions()
+                elif transaction_choice == "3":
+                    categorize_transaction()
+        
+        elif choice == "7":
+            while True:
+                print_header("Category Operations")
+                print("1. Create Category")
+                print("2. List Categories")
+                print("0. Back to Main Menu")
+                
+                category_choice = get_input("\nEnter your choice")
+                
+                if category_choice == "0":
+                    break
+                elif category_choice == "1":
+                    create_category()
+                elif category_choice == "2":
+                    list_categories()
+        
+        elif choice == "8":
+            while True:
+                print_header("Plaid Integration")
+                print("1. Generate Link Token")
+                print("0. Back to Main Menu")
+                
+                plaid_choice = get_input("\nEnter your choice")
+                
+                if plaid_choice == "0":
+                    break
+                elif plaid_choice == "1":
+                    generate_link_token()
 
 if __name__ == "__main__":
     try:
