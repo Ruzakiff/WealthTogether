@@ -22,4 +22,15 @@ def create_user(db: Session, user_data: UserCreate):
     db.commit()
     db.refresh(new_user)
     
-    return new_user 
+    return new_user
+
+def get_all_users(db: Session):
+    """Service function to get all users"""
+    return db.query(User).all()
+
+def get_user_by_id(db: Session, user_id: str):
+    """Service function to get a user by ID"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User with id {user_id} not found")
+    return user 

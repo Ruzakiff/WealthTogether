@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session
 from typing import Dict, Any
 
@@ -7,9 +7,9 @@ from backend.app.database import get_db_session
 
 router = APIRouter()
 
-@router.post("/link", response_model=Dict[str, str])
+@router.post("/link/{user_id}", response_model=Dict[str, str])
 async def generate_link_token(
-    user_id: str = Query(..., description="ID of the user linking their account"),
+    user_id: str,
     db: Session = Depends(get_db_session)
 ):
     """
@@ -22,9 +22,9 @@ async def generate_link_token(
 
 @router.post("/exchange", response_model=Dict[str, Any])
 async def exchange_token(
-    public_token: str,
-    metadata: Dict[str, Any],
-    user_id: str = Query(..., description="ID of the user linking their account"),
+    public_token: str = Body(...),
+    metadata: Dict[str, Any] = Body(...),
+    user_id: str = Body(...),
     db: Session = Depends(get_db_session)
 ):
     """
@@ -38,7 +38,7 @@ async def exchange_token(
 
 @router.post("/sync", response_model=Dict[str, Any])
 async def manual_sync(
-    user_id: str = Query(..., description="ID of the user to sync transactions for"),
+    user_id: str = Body(...),
     db: Session = Depends(get_db_session)
 ):
     """

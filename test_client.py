@@ -767,9 +767,14 @@ def generate_link_token():
         input("\nPress Enter to continue...")
         return
     
-    params = {"user_id": STORED_IDS["users"][user_name]}
-    
-    make_request("post", "/plaid/link", None, params)
+    # Use the user_id directly in the URL path
+    user_id = STORED_IDS["users"][user_name]
+    response = requests.post(f"{BASE_URL}/plaid/link/{user_id}")
+    if response.status_code == 200:
+        print("\nResponse:")
+        print(json.dumps(response.json(), indent=2))
+    else:
+        print(f"\nError {response.status_code}: {response.text}")
     input("\nPress Enter to continue...")
 
 def main_menu():
