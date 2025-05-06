@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Dict, Any, List
 
 from sqlalchemy.orm import Session
-from backend.app.models.models import User, BankAccount
+from backend.app.models.models import User, BankAccount, PlaidItem
 from backend.app.schemas.transactions import TransactionCreate
 from backend.app.config import get_settings
 from backend.app.services.transaction_service import create_transaction
@@ -67,8 +67,17 @@ def exchange_public_token(public_token: str, metadata: Dict[str, Any], user_id: 
         access_token = exchange_response['access_token']
         item_id = exchange_response['item_id']
         
-        # Store these securely (you may want to encrypt)
-        # This is simplified - in production use encryption for sensitive tokens
+        # Store the access token in the database
+        plaid_item = PlaidItem(
+            user_id=user_id,
+            access_token=access_token,
+            item_id=item_id,
+            institution_id=metadata.get('institution', {}).get('institution_id'),
+            institution_name=metadata.get('institution', {}).get('name', 'Unknown Institution')
+        )
+        db.add(plaid_item)
+        db.commit()
+        db.refresh(plaid_item)
         
         try:
             # Get account info from Plaid

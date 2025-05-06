@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from backend.app.services.plaid_service import create_link_token, exchange_public_token, sync_transactions, create_sandbox_token
 from backend.app.database import get_db_session
-from backend.app.models.models import BankAccount
+from backend.app.models.models import BankAccount, PlaidItem
 
 router = APIRouter()
 
@@ -44,7 +44,7 @@ async def exchange_token(
 
 @router.post("/sync", response_model=Dict[str, Any])
 async def manual_sync(
-    user_id: str = Body(...),
+    user_id: str = Body(..., embed=True),
     db: Session = Depends(get_db_session)
 ):
     """
@@ -63,15 +63,39 @@ async def manual_sync(
     if not accounts:
         return {"status": "no_accounts", "message": "No Plaid-connected accounts found for this user"}
     
-    # In a full implementation, we would:
-    # 1. Get the access token for these accounts
-    # 2. Call sync_transactions for each token
+    # Get the user's Plaid items
+    plaid_items = db.query(PlaidItem).filter(PlaidItem.user_id == user_id).all()
     
-    # For now, as a placeholder:
-    return {
-        "status": "success", 
-        "message": f"Found {len(accounts)} Plaid-connected accounts. Syncing not yet implemented."
-    }
+    if not plaid_items:
+        return {"status": "no_items", "message": "No Plaid items found for this user"}
+    
+    # Sync transactions for each Plaid item
+    all_results = []
+    for plaid_item in plaid_items:
+        # Get accounts associated with this Plaid item
+        item_accounts = [a for a in accounts if a.plaid_account_id is not None]
+        
+        if not item_accounts:
+            continue
+            
+        try:
+            sync_result = sync_transactions(plaid_item.access_token, db, item_accounts)
+            all_results.append({
+                "item_id": plaid_item.item_id,
+                "institution": plaid_item.institution_name,
+                "result": sync_result
+            })
+        except Exception as e:
+            all_results.append({
+                "item_id": plaid_item.item_id,
+                "institution": plaid_item.institution_name,
+                "error": str(e)
+            })
+    
+    if not all_results:
+        return {"status": "no_sync", "message": "No accounts were synced"}
+        
+    return {"status": "success", "accounts_synced": len(accounts), "sync_results": all_results}
 
 @router.post("/sandbox/create_token", response_model=Dict[str, str])
 async def create_sandbox_token_endpoint(

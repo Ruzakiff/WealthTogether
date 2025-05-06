@@ -27,6 +27,7 @@ class LedgerEventType(str, Enum):
     DEPOSIT = "deposit"
     WITHDRAWAL = "withdrawal"
     SYSTEM = "system"
+    CATEGORIZATION = "categorization"
 
 class Frequency(str, Enum):
     MONTHLY = "monthly"
@@ -181,3 +182,17 @@ class Transaction(Base):
     # Relationships
     account = relationship("BankAccount", back_populates="transactions")
     category = relationship("Category", back_populates="transactions")
+
+class PlaidItem(Base):
+    __tablename__ = "plaid_items"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    access_token = Column(String, nullable=False)
+    item_id = Column(String, nullable=False)
+    institution_id = Column(String, nullable=True)
+    institution_name = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", backref="plaid_items")

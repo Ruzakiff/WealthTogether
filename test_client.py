@@ -862,6 +862,7 @@ def plaid_menu():
         print("1. Generate Link Token")
         print("2. Create Sandbox Token")
         print("3. Exchange Public Token")
+        print("4. Sync Transactions")
         print("0. Back to Main Menu")
         
         plaid_choice = get_input("\nEnter your choice")
@@ -874,6 +875,46 @@ def plaid_menu():
             create_sandbox_token()
         elif plaid_choice == "3":
             exchange_public_token()
+        elif plaid_choice == "4":
+            sync_transactions()
+
+def sync_transactions():
+    print_header("Sync Plaid Transactions")
+    
+    if not STORED_IDS["users"]:
+        print("You need to create a user first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("Available users:")
+    for name, id in STORED_IDS["users"].items():
+        print(f"  - {name}: {id}")
+    
+    user_name = get_input("Select user (name)")
+    
+    if user_name not in STORED_IDS["users"]:
+        print("User name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    user_id = STORED_IDS["users"][user_name]
+    data = {"user_id": user_id}
+    
+    result = make_request("post", "/plaid/sync", data)
+    
+    if result:
+        print("\nTransaction sync results:")
+        if result.get("status") == "no_accounts":
+            print("No Plaid-connected accounts found for this user.")
+        elif result.get("status") == "success":
+            print(f"Successfully synced transactions for {result.get('accounts_synced', 0)} accounts.")
+            print(f"Sync details: {result.get('sync_results', {})}")
+        else:
+            print(f"Sync status: {result.get('status')}")
+            if result.get("message"):
+                print(f"Message: {result.get('message')}")
+    
+    input("\nPress Enter to continue...")
 
 def main_menu():
     while True:
