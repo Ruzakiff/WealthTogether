@@ -1,11 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session
-from typing import Dict, Any
+from typing import Dict, Any, List
+from pydantic import BaseModel
 
-from backend.app.services.plaid_service import create_link_token, exchange_public_token, sync_transactions
+from backend.app.services.plaid_service import create_link_token, exchange_public_token, sync_transactions, create_sandbox_token
 from backend.app.database import get_db_session
+from backend.app.models.models import BankAccount
 
 router = APIRouter()
+
+class SandboxTokenRequest(BaseModel):
+    institution_id: str
+    initial_products: List[str]
 
 @router.post("/link/{user_id}", response_model=Dict[str, str])
 async def generate_link_token(
@@ -47,10 +53,38 @@ async def manual_sync(
     - Updates transactions for all Plaid-connected accounts owned by the user
     - Returns count of newly synced transactions
     """
-    # This is a simplified version - in a real implementation, you would:
-    # 1. Get all Plaid-connected accounts for this user
-    # 2. Retrieve the access tokens for each
-    # 3. Call sync_transactions for each token
+    # Get all bank accounts for this user that have Plaid connections
+    accounts = db.query(BankAccount).filter(
+        BankAccount.user_id == user_id,
+        BankAccount.plaid_account_id.isnot(None),
+        BankAccount.is_manual == False
+    ).all()
     
-    # For simplicity, returning a placeholder response
-    return {"status": "Not implemented"} 
+    if not accounts:
+        return {"status": "no_accounts", "message": "No Plaid-connected accounts found for this user"}
+    
+    # In a full implementation, we would:
+    # 1. Get the access token for these accounts
+    # 2. Call sync_transactions for each token
+    
+    # For now, as a placeholder:
+    return {
+        "status": "success", 
+        "message": f"Found {len(accounts)} Plaid-connected accounts. Syncing not yet implemented."
+    }
+
+@router.post("/sandbox/create_token", response_model=Dict[str, str])
+async def create_sandbox_token_endpoint(
+    request_data: SandboxTokenRequest,
+    db: Session = Depends(get_db_session)
+):
+    """
+    Create a sandbox public token for testing.
+    
+    - Creates a test token that can be exchanged just like a real one
+    - For development/testing only
+    """
+    return create_sandbox_token(
+        request_data.institution_id,
+        request_data.initial_products
+    ) 

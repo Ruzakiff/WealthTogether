@@ -777,6 +777,104 @@ def generate_link_token():
         print(f"\nError {response.status_code}: {response.text}")
     input("\nPress Enter to continue...")
 
+def create_sandbox_token():
+    print_header("Create Plaid Sandbox Token")
+    
+    institution_id = get_input("Institution ID", "ins_109508")  # Default for Chase
+    
+    # List of available products: auth, transactions, identity, income, assets, etc.
+    products_input = get_input("Initial Products (comma-separated)", "transactions")
+    initial_products = [p.strip() for p in products_input.split(",")]
+    
+    data = {
+        "institution_id": institution_id,
+        "initial_products": initial_products
+    }
+    
+    result = make_request("post", "/plaid/sandbox/create_token", data)
+    
+    if result and "public_token" in result:
+        print("\nPublic Token created successfully!")
+        print("You can now use this token with the /plaid/exchange endpoint")
+        print(f"Public Token: {result['public_token']}")
+        
+        # Ask if user wants to immediately exchange this token
+        proceed = get_input("Exchange this token now? (y/n)", "y").lower() == "y"
+        if proceed:
+            exchange_public_token(result["public_token"])
+    
+    input("\nPress Enter to continue...")
+
+def exchange_public_token(public_token=None):
+    print_header("Exchange Public Token")
+    
+    if not STORED_IDS["users"]:
+        print("You need to create a user first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    # Get public token if not provided
+    if not public_token:
+        public_token = get_input("Public Token")
+    else:
+        print(f"Using public token: {public_token}")
+    
+    # Select user
+    print("\nAvailable users:")
+    for name, id in STORED_IDS["users"].items():
+        print(f"  - {name}: {id}")
+    
+    user_name = get_input("Select user (name)")
+    
+    if user_name not in STORED_IDS["users"]:
+        print("User name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    # Create the metadata (minimal for sandbox)
+    metadata = {
+        "institution": {
+            "name": "Sandbox Bank",
+            "institution_id": "ins_sandbox"
+        }
+    }
+    
+    data = {
+        "public_token": public_token,
+        "metadata": metadata,
+        "user_id": STORED_IDS["users"][user_name]
+    }
+    
+    result = make_request("post", "/plaid/exchange", data)
+    
+    if result and "accounts" in result:
+        print("\nAccounts created successfully!")
+        for account in result["accounts"]:
+            account_name = f"{account['name']} (Plaid)"
+            STORED_IDS["accounts"][account_name] = account["id"]
+            print(f"  - Added account: {account_name}")
+    
+    input("\nPress Enter to continue...")
+
+def plaid_menu():
+    while True:
+        print_header("Plaid Integration")
+        print("1. Generate Link Token")
+        print("2. Create Sandbox Token")
+        print("3. Exchange Public Token")
+        print("0. Back to Main Menu")
+        
+        plaid_choice = get_input("\nEnter your choice")
+        
+        if plaid_choice == "0":
+            break
+        elif plaid_choice == "1":
+            generate_link_token()
+        elif plaid_choice == "2":
+            create_sandbox_token()
+        elif plaid_choice == "3":
+            exchange_public_token()
+
 def main_menu():
     while True:
         print_header("CFO Command Center Test Client")
@@ -916,17 +1014,7 @@ def main_menu():
                     list_categories()
         
         elif choice == "8":
-            while True:
-                print_header("Plaid Integration")
-                print("1. Generate Link Token")
-                print("0. Back to Main Menu")
-                
-                plaid_choice = get_input("\nEnter your choice")
-                
-                if plaid_choice == "0":
-                    break
-                elif plaid_choice == "1":
-                    generate_link_token()
+            plaid_menu()
 
 if __name__ == "__main__":
     try:

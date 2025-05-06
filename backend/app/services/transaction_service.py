@@ -2,76 +2,33 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from typing import List, Optional
 from datetime import date, datetime, timedelta
+from uuid import uuid4
 
 from backend.app.models.models import Transaction, BankAccount, Category, LedgerEvent, LedgerEventType
 from backend.app.schemas.transactions import TransactionCreate, TransactionCategorize
 
-def create_transaction(db: Session, transaction_data: TransactionCreate):
-    """Service function to create a new transaction"""
-    
-    # Verify the account exists
-    account = db.query(BankAccount).filter(BankAccount.id == transaction_data.account_id).first()
-    if not account:
-        raise HTTPException(status_code=404, detail=f"Account with id {transaction_data.account_id} not found")
-    
-    # If category is provided, verify it exists
-    if transaction_data.category_id:
-        category = db.query(Category).filter(Category.id == transaction_data.category_id).first()
-        if not category:
-            raise HTTPException(status_code=404, detail=f"Category with id {transaction_data.category_id} not found")
-    
-    # Check for duplicate Plaid transaction if ID is provided
-    if transaction_data.plaid_transaction_id:
-        existing = db.query(Transaction).filter(
-            Transaction.plaid_transaction_id == transaction_data.plaid_transaction_id
-        ).first()
-        if existing:
-            # Update existing transaction instead of creating new
-            for key, value in transaction_data.dict().items():
-                setattr(existing, key, value)
-            db.commit()
-            db.refresh(existing)
-            return existing
-    
-    # Create new transaction
-    new_transaction = Transaction(
-        account_id=transaction_data.account_id,
-        amount=transaction_data.amount,
-        description=transaction_data.description,
-        merchant_name=transaction_data.merchant_name,
-        date=transaction_data.date,
-        category_id=transaction_data.category_id,
-        is_pending=transaction_data.is_pending,
-        plaid_transaction_id=transaction_data.plaid_transaction_id
+def create_transaction(db: Session, transaction: TransactionCreate):
+    """
+    Create a new transaction record from Plaid data
+    """
+    # Create the Transaction record directly without using LedgerEvent
+    db_transaction = Transaction(
+        id=str(uuid4()),
+        account_id=transaction.account_id,
+        amount=transaction.amount,
+        description=transaction.description,
+        merchant_name=transaction.merchant_name,
+        date=transaction.date,
+        category_id=transaction.category_id,
+        is_pending=transaction.is_pending,
+        plaid_transaction_id=transaction.plaid_transaction_id
     )
     
-    # Add to database
-    db.add(new_transaction)
+    db.add(db_transaction)
     db.commit()
-    db.refresh(new_transaction)
+    db.refresh(db_transaction)
     
-    # Update account balance if transaction is not pending
-    if not transaction_data.is_pending:
-        account.balance = account.balance - transaction_data.amount
-        db.commit()
-    
-    # Add a ledger event for this transaction
-    log_event = LedgerEvent(
-        event_type=LedgerEventType.TRANSACTION,
-        amount=transaction_data.amount,
-        source_account_id=transaction_data.account_id,
-        user_id=account.user_id,
-        event_metadata={
-            "transaction_id": new_transaction.id,
-            "description": transaction_data.description,
-            "merchant": transaction_data.merchant_name,
-            "category_id": transaction_data.category_id
-        }
-    )
-    db.add(log_event)
-    db.commit()
-    
-    return new_transaction
+    return db_transaction
 
 def get_transactions_by_account(db: Session, account_id: str, 
                                start_date: Optional[date] = None,
