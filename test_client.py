@@ -37,44 +37,46 @@ def get_input(prompt: str, default: str = None) -> str:
         return result
     return input(f"{prompt}: ").strip()
 
-def make_request(method: str, endpoint: str, data: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def make_request(method, endpoint, data=None, params=None):
+    """Helper function to make requests to the API"""
     url = f"{BASE_URL}{endpoint}"
     
-    print(f"\nMaking {method} request to {url}")
+    # Debug output
+    print(f"\nMaking {method.upper()} request to {url}")
     if data:
         print(f"Request data: {json.dumps(data, indent=2)}")
     if params:
         print(f"Query params: {params}")
     
     try:
-        if method.lower() == "get":
+        if method.lower() == 'get':
             response = requests.get(url, params=params)
-        elif method.lower() == "post":
-            response = requests.post(url, json=data)
-        elif method.lower() == "put":
-            response = requests.put(url, json=data)
-        elif method.lower() == "delete":
-            response = requests.delete(url)
+        elif method.lower() == 'post':
+            response = requests.post(url, json=data, params=params)
+        elif method.lower() == 'put':
+            response = requests.put(url, json=data, params=params)
+        elif method.lower() == 'delete':
+            response = requests.delete(url, params=params)
         else:
-            print(f"Unknown method: {method}")
-            return {}
+            print(f"Unsupported method: {method}")
+            return None
         
-        if response.status_code >= 400:
+        # Check for successful response
+        if response.status_code >= 200 and response.status_code < 300:
+            if response.text:
+                result = response.json()
+                print(f"Response: {json.dumps(result, indent=2)}")
+                return result
+            return {}
+        else:
             print(f"Error {response.status_code}: {response.text}")
-            return {}
-        
-        if response.text:
-            result = response.json()
-            print(f"\nResponse ({response.status_code}):")
-            print(json.dumps(result, indent=2))
-            return result
-        return {}
-    
-    except requests.RequestException as e:
-        print(f"Request failed: {e}")
-        return {}
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Request error: {str(e)}")
+        return None
     except json.JSONDecodeError:
-        print(f"Invalid JSON response: {response.text}")
+        print(f"Warning: Response was not valid JSON: {response.text}")
         return {}
 
 # User operations
@@ -317,12 +319,37 @@ def list_goals():
 def allocate_to_goal():
     print_header("Allocate to Goal")
     
-    if not STORED_IDS["goals"] or not STORED_IDS["accounts"]:
-        print("You need to create goals and accounts first.")
+    if not STORED_IDS["goals"]:
+        print("You need to create a goal first.")
         input("\nPress Enter to continue...")
         return
     
-    print("Available goals:")
+    if not STORED_IDS["accounts"]:
+        print("You need to create a bank account first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    # First, select a user who is performing the allocation
+    if not STORED_IDS["users"]:
+        print("You need to create a user first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("Select the user who is performing the allocation:")
+    for name, id in STORED_IDS["users"].items():
+        print(f"  - {name}: {id}")
+    
+    user_name = get_input("Select user (name)")
+    
+    if user_name not in STORED_IDS["users"]:
+        print("User name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    user_id = STORED_IDS["users"][user_name]
+    
+    # Then, select the goal
+    print("\nAvailable goals:")
     for name, id in STORED_IDS["goals"].items():
         print(f"  - {name}: {id}")
     
@@ -333,6 +360,7 @@ def allocate_to_goal():
         input("\nPress Enter to continue...")
         return
     
+    # Show accounts
     print("\nAvailable accounts:")
     for name, id in STORED_IDS["accounts"].items():
         print(f"  - {name}: {id}")
@@ -344,23 +372,32 @@ def allocate_to_goal():
         input("\nPress Enter to continue...")
         return
     
-    # Get user ID for this allocation
-    user_name = account_name.split("'s")[0]
-    if user_name not in STORED_IDS["users"]:
-        print(f"Could not determine user for account {account_name}")
+    amount = get_input("Amount to allocate", "100.00")
+    try:
+        amount = float(amount)
+    except ValueError:
+        print("Invalid amount. Please enter a number.")
         input("\nPress Enter to continue...")
         return
     
-    amount = get_input("Amount to allocate", "500")
+    # We'll try two approaches:
     
+    # 1. First, try with query parameter
     data = {
         "goal_id": STORED_IDS["goals"][goal_name],
         "account_id": STORED_IDS["accounts"][account_name],
-        "amount": float(amount)
+        "amount": amount
     }
     
-    user_id = STORED_IDS["users"][user_name]
-    make_request("post", f"/goals/allocate?user_id={user_id}", data)
+    params = {"user_id": user_id}
+    
+    result = make_request("post", "/goals/allocate", data, params)
+    
+    # 2. If the first approach fails, try with the user_id in the body
+    if not result:
+        print("\nRetrying with user_id in request body...")
+        data["user_id"] = user_id
+        result = make_request("post", "/goals/allocate", data)
     
     input("\nPress Enter to continue...")
 
@@ -767,14 +804,13 @@ def generate_link_token():
         input("\nPress Enter to continue...")
         return
     
-    # Use the user_id directly in the URL path
+    # Use the user_id in the request body instead of path
     user_id = STORED_IDS["users"][user_name]
-    response = requests.post(f"{BASE_URL}/plaid/link/{user_id}")
-    if response.status_code == 200:
-        print("\nResponse:")
-        print(json.dumps(response.json(), indent=2))
-    else:
-        print(f"\nError {response.status_code}: {response.text}")
+    data = {"user_id": user_id}
+    
+    # Call the updated endpoint
+    result = make_request("post", "/plaid/link", data)
+    
     input("\nPress Enter to continue...")
 
 def create_sandbox_token():
@@ -900,19 +936,20 @@ def sync_transactions():
     user_id = STORED_IDS["users"][user_name]
     data = {"user_id": user_id}
     
-    result = make_request("post", "/plaid/sync", data)
+    # Call the updated endpoint for syncing transactions
+    result = make_request("post", "/plaid/transactions/sync", data)
     
-    if result:
-        print("\nTransaction sync results:")
-        if result.get("status") == "no_accounts":
-            print("No Plaid-connected accounts found for this user.")
-        elif result.get("status") == "success":
-            print(f"Successfully synced transactions for {result.get('accounts_synced', 0)} accounts.")
-            print(f"Sync details: {result.get('sync_results', {})}")
-        else:
-            print(f"Sync status: {result.get('status')}")
-            if result.get("message"):
-                print(f"Message: {result.get('message')}")
+    if result and result.get("status") == "success":
+        print("\nTransactions synced successfully!")
+        if "accounts_synced" in result:
+            print(f"Synced {result['accounts_synced']} accounts")
+        if "sync_results" in result:
+            print("\nSync results by institution:")
+            for item_result in result["sync_results"]:
+                if "error" in item_result:
+                    print(f"  - {item_result['institution']}: Error: {item_result['error']}")
+                else:
+                    print(f"  - {item_result['institution']}: Success")
     
     input("\nPress Enter to continue...")
 

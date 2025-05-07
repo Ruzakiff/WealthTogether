@@ -14,9 +14,9 @@ class SandboxTokenRequest(BaseModel):
     institution_id: str
     initial_products: List[str]
 
-@router.post("/link/{user_id}", response_model=Dict[str, str])
+@router.post("/link", response_model=Dict[str, str])
 async def generate_link_token(
-    user_id: str,
+    user_id: str = Body(..., embed=True),
     db: Session = Depends(get_db_session)
 ):
     """
@@ -43,7 +43,7 @@ async def exchange_token(
     """
     return exchange_public_token(public_token, metadata, user_id, db)
 
-@router.post("/sync", response_model=Dict[str, Any])
+@router.post("/transactions/sync", response_model=Dict[str, Any])
 async def manual_sync(
     user_id: str = Body(..., embed=True),
     db: Session = Depends(get_db_session)
