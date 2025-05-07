@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from backend.app.services.plaid_service import create_link_token, exchange_public_token, sync_transactions, create_sandbox_token
 from backend.app.database import get_db_session
 from backend.app.models.models import BankAccount, PlaidItem
+from backend.app.services.plaid_service import client
 
 router = APIRouter()
 
@@ -72,13 +73,17 @@ async def manual_sync(
     # Sync transactions for each Plaid item
     all_results = []
     for plaid_item in plaid_items:
-        # Get accounts associated with this Plaid item
-        item_accounts = [a for a in accounts if a.plaid_account_id is not None]
-        
-        if not item_accounts:
-            continue
-            
         try:
+            # Get current accounts for this Plaid item by fetching account info from Plaid
+            accounts_response = client.accounts_get({"access_token": plaid_item.access_token})
+            plaid_account_ids = [account['account_id'] for account in accounts_response['accounts']]
+            
+            # Filter accounts that match this Plaid item's account IDs
+            item_accounts = [a for a in accounts if a.plaid_account_id in plaid_account_ids]
+            
+            if not item_accounts:
+                continue
+                
             sync_result = sync_transactions(plaid_item.access_token, db, item_accounts)
             all_results.append({
                 "item_id": plaid_item.item_id,
