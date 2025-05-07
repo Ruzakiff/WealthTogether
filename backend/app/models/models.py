@@ -198,3 +198,18 @@ class PlaidItem(Base):
     
     # Relationships
     user = relationship("User", backref="plaid_items")
+
+class Budget(Base):
+    __tablename__ = "budgets"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    couple_id = Column(String, ForeignKey("couples.id"))
+    category_id = Column(String, ForeignKey("categories.id"))
+    amount = Column(Float, nullable=False)
+    period = Column(String, nullable=False)  # monthly, weekly, etc.
+    start_date = Column(Date, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    category = relationship("Category")
+    couple = relationship("Couple")

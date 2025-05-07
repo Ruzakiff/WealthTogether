@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Dict, Any, List
 
 from sqlalchemy.orm import Session
-from backend.app.models.models import User, BankAccount, PlaidItem, Transaction
+from backend.app.models.models import User, BankAccount, PlaidItem, Transaction, Category
 from backend.app.schemas.transactions import TransactionCreate
 from backend.app.config import get_settings
 from backend.app.services.transaction_service import create_transaction
@@ -236,6 +236,29 @@ def process_added_transactions(transactions: List[Dict[str, Any]], db: Session, 
         # Get the transaction date field
         transaction_date = transaction['date']
         
+        # Process category information
+        category_id = None
+        if transaction.get('category') and len(transaction['category']) > 0:
+            # Use the most specific category (last in the list)
+            category_name = transaction['category'][-1]
+            plaid_category_id = transaction.get('category_id')
+            
+            # Check if we already have this category in our database
+            category = db.query(Category).filter_by(name=category_name).first()
+            
+            if not category:
+                # Create a new category
+                category = Category(
+                    name=category_name,
+                    # Store the Plaid category ID if you want to link back to Plaid's taxonomy
+                    # You could add a plaid_category_id field to your Category model for this
+                )
+                db.add(category)
+                db.commit()
+                db.refresh(category)
+            
+            category_id = category.id
+        
         # Create transaction in our database
         trans_data = TransactionCreate(
             account_id=account_map[transaction['account_id']],
@@ -245,7 +268,7 @@ def process_added_transactions(transactions: List[Dict[str, Any]], db: Session, 
             date=transaction_date,
             is_pending=transaction['pending'],
             plaid_transaction_id=transaction['transaction_id'],
-            category_id=None
+            category_id=category_id
         )
         
         create_transaction(db, trans_data)
@@ -267,12 +290,35 @@ def process_modified_transactions(transactions: List[Dict[str, Any]], db: Sessio
                 process_added_transactions([transaction], db, accounts)
             continue
         
+        # Process category information
+        category_id = None
+        if transaction.get('category') and len(transaction['category']) > 0:
+            # Use the most specific category (last in the list)
+            category_name = transaction['category'][-1]
+            plaid_category_id = transaction.get('category_id')
+            
+            # Check if we already have this category in our database
+            category = db.query(Category).filter_by(name=category_name).first()
+            
+            if not category:
+                # Create a new category
+                category = Category(
+                    name=category_name,
+                    # Store the Plaid category ID if you want to link back to Plaid's taxonomy
+                )
+                db.add(category)
+                db.commit()
+                db.refresh(category)
+            
+            category_id = category.id
+        
         # Update the transaction fields
         existing.amount = transaction['amount']
         existing.description = transaction['name']
         existing.merchant_name = transaction.get('merchant_name')
         existing.is_pending = transaction['pending']
         existing.date = transaction['date']
+        existing.category_id = category_id
         
         db.commit()
 
