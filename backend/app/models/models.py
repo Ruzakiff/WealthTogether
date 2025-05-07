@@ -192,6 +192,8 @@ class PlaidItem(Base):
     item_id = Column(String, nullable=False)
     institution_id = Column(String, nullable=True)
     institution_name = Column(String, nullable=True)
+    cursor = Column(String, nullable=True)  # Store the cursor for incremental syncs
+    last_sync_at = Column(DateTime, nullable=True)  # Track when we last synced
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships

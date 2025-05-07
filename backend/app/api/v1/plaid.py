@@ -84,11 +84,12 @@ async def manual_sync(
             if not item_accounts:
                 continue
                 
-            sync_result = sync_transactions(plaid_item.access_token, db, item_accounts)
+            sync_result = sync_transactions(plaid_item.access_token, db, item_accounts, plaid_item.id)
             all_results.append({
                 "item_id": plaid_item.item_id,
                 "institution": plaid_item.institution_name,
-                "result": sync_result
+                "result": sync_result,
+                "last_sync": plaid_item.last_sync_at.isoformat() if plaid_item.last_sync_at else None
             })
         except Exception as e:
             all_results.append({

@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Dict, Any, List
 
 from sqlalchemy.orm import Session
-from backend.app.models.models import User, BankAccount, PlaidItem
+from backend.app.models.models import User, BankAccount, PlaidItem, Transaction
 from backend.app.schemas.transactions import TransactionCreate
 from backend.app.config import get_settings
 from backend.app.services.transaction_service import create_transaction
@@ -102,7 +102,7 @@ def exchange_public_token(public_token: str, metadata: Dict[str, Any], user_id: 
             
             # Initialize transaction sync
             try:
-                sync_result = sync_transactions(access_token, db, created_accounts)
+                sync_result = sync_transactions(access_token, db, created_accounts, plaid_item.id)
                 
                 return {
                     "item_id": item_id,
@@ -146,11 +146,18 @@ def exchange_public_token(public_token: str, metadata: Dict[str, Any], user_id: 
             detail=f"Unexpected error in token exchange: {str(e)}"
         )
 
-def sync_transactions(access_token: str, db: Session, accounts: List[BankAccount]) -> Dict[str, Any]:
-    """Sync transactions from Plaid for the given accounts"""
+def sync_transactions(access_token: str, db: Session, accounts: List[BankAccount], plaid_item_id: str = None) -> Dict[str, Any]:
+    """Sync transactions for the given access token and accounts"""
     try:
-        # Start with an empty cursor for the initial sync
+        # Get the PlaidItem to retrieve the cursor
         cursor = None
+        plaid_item = None
+        
+        if plaid_item_id:
+            plaid_item = db.query(PlaidItem).filter(PlaidItem.id == plaid_item_id).first()
+            if plaid_item:
+                cursor = plaid_item.cursor  # Use saved cursor if available
+        
         added = []
         modified = []
         removed = []
@@ -176,28 +183,39 @@ def sync_transactions(access_token: str, db: Session, accounts: List[BankAccount
             # Process the newly synced transactions
             if sync_response['added']:
                 added.extend(sync_response['added'])
-                process_transactions(sync_response['added'], db, accounts)
+                process_added_transactions(sync_response['added'], db, accounts)
             
             if sync_response['modified']:
                 modified.extend(sync_response['modified'])
-                # Update modified transactions (implementation depends on your needs)
+                process_modified_transactions(sync_response['modified'], db, accounts)
             
             if sync_response['removed']:
                 removed.extend(sync_response['removed'])
-                # Handle removed transactions (implementation depends on your needs)
+                process_removed_transactions(sync_response['removed'], db)
             
             cursor = sync_response['next_cursor']
             has_more = sync_response['has_more']
         
-        return {"status": "success", "transactions_synced": len(added)}
+        # Save the cursor for the next sync
+        if plaid_item and cursor:
+            plaid_item.cursor = cursor
+            plaid_item.last_sync_at = datetime.utcnow()
+            db.commit()
+        
+        return {
+            "status": "success", 
+            "added": len(added),
+            "modified": len(modified),
+            "removed": len(removed)
+        }
         
     except plaid.ApiException as e:
         raise HTTPException(status_code=500, detail=f"Failed to sync transactions: {str(e)}")
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-def process_transactions(transactions: List[Dict[str, Any]], db: Session, accounts: List[BankAccount]) -> None:
-    """Process transactions from Plaid and create them in our database"""
+def process_added_transactions(transactions: List[Dict[str, Any]], db: Session, accounts: List[BankAccount]) -> None:
+    """Process new transactions from Plaid and create them in our database"""
     
     # Create a mapping of Plaid account IDs to our account IDs
     account_map = {account.plaid_account_id: account.id for account in accounts}
@@ -207,7 +225,15 @@ def process_transactions(transactions: List[Dict[str, Any]], db: Session, accoun
         if transaction['account_id'] not in account_map:
             continue
         
-        # Get the transaction date field directly - in sandbox, it's already a date object
+        # Check if transaction already exists (avoid duplicates)
+        existing = db.query(Transaction).filter_by(
+            plaid_transaction_id=transaction['transaction_id']
+        ).first()
+        
+        if existing:
+            continue  # Skip if we already have this transaction
+        
+        # Get the transaction date field
         transaction_date = transaction['date']
         
         # Create transaction in our database
@@ -216,14 +242,57 @@ def process_transactions(transactions: List[Dict[str, Any]], db: Session, accoun
             amount=transaction['amount'],
             description=transaction['name'],
             merchant_name=transaction.get('merchant_name'),
-            date=transaction_date,  # Use the date directly without parsing
+            date=transaction_date,
             is_pending=transaction['pending'],
             plaid_transaction_id=transaction['transaction_id'],
-            # We'll handle categorization separately
             category_id=None
         )
         
         create_transaction(db, trans_data)
+
+def process_modified_transactions(transactions: List[Dict[str, Any]], db: Session, accounts: List[BankAccount]) -> None:
+    """Update existing transactions based on Plaid modifications"""
+    
+    account_map = {account.plaid_account_id: account.id for account in accounts}
+    
+    for transaction in transactions:
+        # Find the existing transaction
+        existing = db.query(Transaction).filter_by(
+            plaid_transaction_id=transaction['transaction_id']
+        ).first()
+        
+        if not existing:
+            # If it doesn't exist, treat it as a new transaction
+            if transaction['account_id'] in account_map:
+                process_added_transactions([transaction], db, accounts)
+            continue
+        
+        # Update the transaction fields
+        existing.amount = transaction['amount']
+        existing.description = transaction['name']
+        existing.merchant_name = transaction.get('merchant_name')
+        existing.is_pending = transaction['pending']
+        existing.date = transaction['date']
+        
+        db.commit()
+
+def process_removed_transactions(transactions: List[Dict[str, Any]], db: Session) -> None:
+    """Handle transactions that have been removed in Plaid"""
+    
+    for transaction in transactions:
+        # Find the transaction to remove
+        existing = db.query(Transaction).filter_by(
+            plaid_transaction_id=transaction['transaction_id']
+        ).first()
+        
+        if existing:
+            # Option 1: Delete the transaction
+            db.delete(existing)
+            
+            # Option 2: Mark as removed but keep the record
+            # existing.is_removed = True  # Would need to add this field to model
+            
+            db.commit()
 
 def create_sandbox_token(institution_id: str, initial_products: List[str]) -> Dict[str, Any]:
     """Create a sandbox public token for testing"""

@@ -950,6 +950,10 @@ def sync_transactions():
                     print(f"  - {item_result['institution']}: Error: {item_result['error']}")
                 else:
                     print(f"  - {item_result['institution']}: Success")
+                    details = item_result.get("result", {})
+                    print(f"    Added: {details.get('added', 0)} transactions")
+                    print(f"    Updated: {details.get('modified', 0)} transactions")
+                    print(f"    Removed: {details.get('removed', 0)} transactions")
     
     input("\nPress Enter to continue...")
 
