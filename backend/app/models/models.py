@@ -159,6 +159,7 @@ class Category(Base):
     name = Column(String, nullable=False)
     parent_category_id = Column(String, ForeignKey("categories.id"), nullable=True)
     icon = Column(String, nullable=True)
+    plaid_category_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships

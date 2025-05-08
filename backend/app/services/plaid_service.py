@@ -180,6 +180,12 @@ def sync_transactions(access_token: str, db: Session, accounts: List[BankAccount
             
             sync_response = client.transactions_sync(sync_request)
             
+            # Debug output for transaction data
+            if sync_response['added']:
+                first_trans = sync_response['added'][0]
+                print(f"Sample transaction data: {first_trans}")
+                print(f"Categories available: {first_trans.get('category', 'None')}")
+            
             # Process the newly synced transactions
             if sync_response['added']:
                 added.extend(sync_response['added'])
@@ -220,6 +226,9 @@ def process_added_transactions(transactions: List[Dict[str, Any]], db: Session, 
     # Create a mapping of Plaid account IDs to our account IDs
     account_map = {account.plaid_account_id: account.id for account in accounts}
     
+    # Track created categories for debugging
+    created_categories = []
+    
     for transaction in transactions:
         # Skip if we don't have this account
         if transaction['account_id'] not in account_map:
@@ -236,28 +245,34 @@ def process_added_transactions(transactions: List[Dict[str, Any]], db: Session, 
         # Get the transaction date field
         transaction_date = transaction['date']
         
-        # Process category information
+        # Process category information - now using personal_finance_category
         category_id = None
-        if transaction.get('category') and len(transaction['category']) > 0:
-            # Use the most specific category (last in the list)
-            category_name = transaction['category'][-1]
-            plaid_category_id = transaction.get('category_id')
+        if transaction.get('personal_finance_category'):
+            # Use the detailed category if available, otherwise use primary
+            pfc = transaction['personal_finance_category']
+            category_name = pfc.get('detailed') or pfc.get('primary')
             
-            # Check if we already have this category in our database
-            category = db.query(Category).filter_by(name=category_name).first()
-            
-            if not category:
-                # Create a new category
-                category = Category(
-                    name=category_name,
-                    # Store the Plaid category ID if you want to link back to Plaid's taxonomy
-                    # You could add a plaid_category_id field to your Category model for this
-                )
-                db.add(category)
-                db.commit()
-                db.refresh(category)
-            
-            category_id = category.id
+            if category_name:
+                # Format the category name to be more readable
+                # Convert TRANSPORTATION_TAXIS_AND_RIDE_SHARES to Transportation: Taxis and Ride Shares
+                readable_name = category_name.replace('_', ' ').title()
+                
+                # Check if we already have this category in our database
+                category = db.query(Category).filter_by(name=readable_name).first()
+                
+                if not category:
+                    # Create a new category
+                    category = Category(
+                        name=readable_name,
+                        plaid_category_id=category_name  # Store the original ID
+                    )
+                    db.add(category)
+                    db.commit()
+                    db.refresh(category)
+                    created_categories.append(readable_name)
+                
+                category_id = category.id
+                print(f"Assigned category: {readable_name} to transaction: {transaction['name']}")
         
         # Create transaction in our database
         trans_data = TransactionCreate(
@@ -272,6 +287,10 @@ def process_added_transactions(transactions: List[Dict[str, Any]], db: Session, 
         )
         
         create_transaction(db, trans_data)
+    
+    # Print debug info about created categories
+    if created_categories:
+        print(f"Created {len(created_categories)} new categories: {', '.join(created_categories)}")
 
 def process_modified_transactions(transactions: List[Dict[str, Any]], db: Session, accounts: List[BankAccount]) -> None:
     """Update existing transactions based on Plaid modifications"""
@@ -290,27 +309,31 @@ def process_modified_transactions(transactions: List[Dict[str, Any]], db: Sessio
                 process_added_transactions([transaction], db, accounts)
             continue
         
-        # Process category information
+        # Process category information - now using personal_finance_category
         category_id = None
-        if transaction.get('category') and len(transaction['category']) > 0:
-            # Use the most specific category (last in the list)
-            category_name = transaction['category'][-1]
-            plaid_category_id = transaction.get('category_id')
+        if transaction.get('personal_finance_category'):
+            # Use the detailed category if available, otherwise use primary
+            pfc = transaction['personal_finance_category']
+            category_name = pfc.get('detailed') or pfc.get('primary')
             
-            # Check if we already have this category in our database
-            category = db.query(Category).filter_by(name=category_name).first()
-            
-            if not category:
-                # Create a new category
-                category = Category(
-                    name=category_name,
-                    # Store the Plaid category ID if you want to link back to Plaid's taxonomy
-                )
-                db.add(category)
-                db.commit()
-                db.refresh(category)
-            
-            category_id = category.id
+            if category_name:
+                # Format the category name to be more readable
+                readable_name = category_name.replace('_', ' ').title()
+                
+                # Check if we already have this category in our database
+                category = db.query(Category).filter_by(name=readable_name).first()
+                
+                if not category:
+                    # Create a new category
+                    category = Category(
+                        name=readable_name,
+                        plaid_category_id=category_name  # Store the original ID
+                    )
+                    db.add(category)
+                    db.commit()
+                    db.refresh(category)
+                
+                category_id = category.id
         
         # Update the transaction fields
         existing.amount = transaction['amount']
