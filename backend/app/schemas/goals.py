@@ -1,16 +1,20 @@
 from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime, date
+from enum import Enum
 from backend.app.models.models import GoalType
+
+
 
 class FinancialGoalCreate(BaseModel):
     couple_id: str
     name: str
-    target_amount: float = Field(gt=0)
+    target_amount: float
     type: GoalType
-    priority: int = Field(ge=1, le=5, description="1-5 priority scale, 1 being highest")
+    priority: int = 3
     deadline: Optional[date] = None
     notes: Optional[str] = None
+    created_by: str  # Add this line
 
 class FinancialGoalResponse(BaseModel):
     id: str

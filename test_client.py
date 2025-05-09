@@ -261,6 +261,12 @@ def create_goal():
         input("\nPress Enter to continue...")
         return
     
+    # Get user (for created_by field)
+    if not STORED_IDS["users"]:
+        print("You need to create a user first.")
+        input("\nPress Enter to continue...")
+        return
+    
     print("Available couples:")
     for name, id in STORED_IDS["couples"].items():
         print(f"  - {name}: {id}")
@@ -268,28 +274,79 @@ def create_goal():
     couple_name = get_input("Select couple (name)")
     
     if couple_name not in STORED_IDS["couples"]:
-        print("Couple name not found in stored couples.")
+        print("Couple name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    # Select user for the created_by field
+    print("\nAvailable users:")
+    for name, id in STORED_IDS["users"].items():
+        print(f"  - {name}: {id}")
+    
+    user_name = get_input("Select user creating the goal (name)")
+    
+    if user_name not in STORED_IDS["users"]:
+        print("User name not found.")
         input("\nPress Enter to continue...")
         return
     
     name = get_input("Goal Name")
-    target = get_input("Target Amount", "10000")
-    goal_type = get_input("Goal Type (emergency, vacation, house, education, other)", "emergency")
-    priority = get_input("Priority (1-5, 1 is highest)", "1")
+    
+    try:
+        target_amount = float(get_input("Target Amount"))
+        if target_amount <= 0:
+            print("Target amount must be positive.")
+            input("\nPress Enter to continue...")
+            return
+    except ValueError:
+        print("Invalid amount.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("\nAvailable goal types:")
+    print("  - generic")
+    print("  - emergency")
+    print("  - retirement")
+    print("  - vacation")
+    print("  - education")
+    print("  - home")
+    print("  - car")
+    print("  - debt")
+    print("  - other")
+    
+    goal_type = get_input("Goal Type", "generic")
+    priority = int(get_input("Priority (1-5, 1 is highest)", "3"))
+    deadline_str = get_input("Deadline (YYYY-MM-DD, optional)")
+    
+    deadline = None
+    if deadline_str:
+        try:
+            year, month, day = map(int, deadline_str.split('-'))
+            deadline = date(year, month, day).isoformat()
+        except (ValueError, TypeError):
+            print("Invalid date format. Using no deadline.")
+    
+    notes = get_input("Notes (optional)")
     
     data = {
         "couple_id": STORED_IDS["couples"][couple_name],
         "name": name,
-        "target_amount": float(target),
+        "target_amount": target_amount,
         "type": goal_type,
-        "priority": int(priority)
+        "priority": priority,
+        "created_by": STORED_IDS["users"][user_name]  # Add the created_by field
     }
+    
+    if deadline:
+        data["deadline"] = deadline
+    
+    if notes:
+        data["notes"] = notes
     
     result = make_request("post", "/goals", data)
     if result and "id" in result:
-        goal_name = f"{couple_name}'s {name}"
-        STORED_IDS["goals"][goal_name] = result["id"]
-        print(f"\nStored goal ID for {goal_name}: {result['id']}")
+        STORED_IDS["goals"][result["name"]] = result["id"]
+        print(f"\nStored goal ID for {result['name']}: {result['id']}")
     
     input("\nPress Enter to continue...")
 
@@ -1211,6 +1268,274 @@ def budget_menu():
         # elif budget_choice == "5":
         #     get_budget_analysis()
 
+# Rebalance operations
+def suggest_rebalance():
+    print_header("Suggest Goal Rebalancing")
+    
+    if not STORED_IDS["couples"]:
+        print("You need to create a couple first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("Available couples:")
+    for name, id in STORED_IDS["couples"].items():
+        print(f"  - {name}: {id}")
+    
+    couple_name = get_input("Select couple (name)")
+    
+    if couple_name not in STORED_IDS["couples"]:
+        print("Couple name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    couple_id = STORED_IDS["couples"][couple_name]
+    params = {"couple_id": couple_id}
+    
+    result = make_request("get", "/rebalance/suggest", params=params)
+    
+    if result:
+        print("\nRebalance suggestions:")
+        if not result:  # Empty list
+            print("No rebalance suggestions available.")
+        else:
+            for idx, suggestion in enumerate(result, 1):
+                print(f"\nSuggestion {idx}:")
+                print(f"  From: {suggestion['source_goal_name']} (ID: {suggestion['source_goal_id']})")
+                print(f"  To: {suggestion['dest_goal_name']} (ID: {suggestion['dest_goal_id']})")
+                print(f"  Amount: ${suggestion['suggested_amount']:.2f}")
+    
+    input("\nPress Enter to continue...")
+
+def execute_rebalance():
+    print_header("Execute Goal Rebalancing")
+    
+    if not STORED_IDS["users"] or not STORED_IDS["goals"]:
+        print("You need users and goals first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    # Get user
+    print("Available users:")
+    for name, id in STORED_IDS["users"].items():
+        print(f"  - {name}: {id}")
+    
+    user_name = get_input("Select user (name)")
+    
+    if user_name not in STORED_IDS["users"]:
+        print("User name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    user_id = STORED_IDS["users"][user_name]
+    
+    # Print available goals
+    print("\nAvailable goals:")
+    for name, id in STORED_IDS["goals"].items():
+        print(f"  - {name}: {id}")
+    
+    # Get number of moves
+    try:
+        num_moves = int(get_input("How many reallocation moves to make?", "1"))
+    except ValueError:
+        print("Invalid number.")
+        input("\nPress Enter to continue...")
+        return
+    
+    moves = []
+    for i in range(num_moves):
+        print(f"\nMove {i+1}:")
+        source_goal_name = get_input("Source Goal Name")
+        dest_goal_name = get_input("Destination Goal Name")
+        
+        if source_goal_name not in STORED_IDS["goals"] or dest_goal_name not in STORED_IDS["goals"]:
+            print("Source or destination goal name not found.")
+            continue
+        
+        try:
+            amount = float(get_input("Amount to move"))
+            if amount <= 0:
+                print("Amount must be positive.")
+                continue
+        except ValueError:
+            print("Invalid amount.")
+            continue
+        
+        note = get_input("Note (optional)")
+        
+        moves.append({
+            "source_goal_id": STORED_IDS["goals"][source_goal_name],
+            "dest_goal_id": STORED_IDS["goals"][dest_goal_name],
+            "amount": amount,
+            "note": note
+        })
+    
+    if not moves:
+        print("No valid moves specified.")
+        input("\nPress Enter to continue...")
+        return
+    
+    data = {
+        "rebalance_id": get_input("Rebalance ID (optional)", None),
+        "moves": moves
+    }
+    
+    params = {"user_id": user_id}
+    result = make_request("post", "/rebalance/commit", data, params)
+    
+    input("\nPress Enter to continue...")
+
+# Surplus operations
+def calculate_surplus():
+    print_header("Calculate Surplus")
+    
+    if not STORED_IDS["couples"] or not STORED_IDS["accounts"]:
+        print("You need couples and accounts first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    print("Available couples:")
+    for name, id in STORED_IDS["couples"].items():
+        print(f"  - {name}: {id}")
+    
+    couple_name = get_input("Select couple (name)")
+    
+    if couple_name not in STORED_IDS["couples"]:
+        print("Couple name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    couple_id = STORED_IDS["couples"][couple_name]
+    
+    # Print available accounts
+    print("\nAvailable accounts:")
+    for name, id in STORED_IDS["accounts"].items():
+        print(f"  - {name}: {id}")
+    
+    # Get accounts to consider
+    account_names = []
+    while True:
+        account_name = get_input("\nEnter account name (or leave blank to finish)")
+        if not account_name:
+            break
+        
+        if account_name not in STORED_IDS["accounts"]:
+            print("Account name not found.")
+            continue
+            
+        account_names.append(account_name)
+    
+    if not account_names:
+        print("No valid accounts specified.")
+        input("\nPress Enter to continue...")
+        return
+    
+    account_ids = [STORED_IDS["accounts"][name] for name in account_names]
+    
+    # Get buffer percentage
+    try:
+        buffer_percent = float(get_input("Buffer percentage", "30"))
+        if buffer_percent < 0 or buffer_percent > 100:
+            print("Buffer percentage must be between 0 and 100.")
+            input("\nPress Enter to continue...")
+            return
+    except ValueError:
+        print("Invalid buffer percentage.")
+        input("\nPress Enter to continue...")
+        return
+    
+    data = {
+        "account_ids": account_ids,
+        "buffer_percent": buffer_percent
+    }
+    
+    params = {"couple_id": couple_id}
+    result = make_request("post", "/surplus/calculate", data, params)
+    
+    input("\nPress Enter to continue...")
+
+def allocate_surplus():
+    print_header("Allocate Surplus")
+    
+    if not STORED_IDS["users"] or not STORED_IDS["accounts"] or not STORED_IDS["goals"]:
+        print("You need users, accounts, and goals first.")
+        input("\nPress Enter to continue...")
+        return
+    
+    # Get user
+    print("Available users:")
+    for name, id in STORED_IDS["users"].items():
+        print(f"  - {name}: {id}")
+    
+    user_name = get_input("Select user (name)")
+    
+    if user_name not in STORED_IDS["users"]:
+        print("User name not found.")
+        input("\nPress Enter to continue...")
+        return
+    
+    user_id = STORED_IDS["users"][user_name]
+    
+    # Print available accounts
+    print("\nAvailable accounts:")
+    for name, id in STORED_IDS["accounts"].items():
+        print(f"  - {name}: {id}")
+    
+    # Print available goals
+    print("\nAvailable goals:")
+    for name, id in STORED_IDS["goals"].items():
+        print(f"  - {name}: {id}")
+    
+    # Get number of allocations
+    try:
+        num_allocations = int(get_input("How many surplus allocations to make?", "1"))
+    except ValueError:
+        print("Invalid number.")
+        input("\nPress Enter to continue...")
+        return
+    
+    allocations = []
+    for i in range(num_allocations):
+        print(f"\nAllocation {i+1}:")
+        account_name = get_input("Source account name")
+        goal_name = get_input("Destination goal name")
+        
+        if account_name not in STORED_IDS["accounts"] or goal_name not in STORED_IDS["goals"]:
+            print("Account or goal name not found.")
+            continue
+        
+        try:
+            amount = float(get_input("Amount to allocate"))
+            if amount <= 0:
+                print("Amount must be positive.")
+                continue
+        except ValueError:
+            print("Invalid amount.")
+            continue
+        
+        note = get_input("Note (optional)")
+        
+        allocations.append({
+            "account_id": STORED_IDS["accounts"][account_name],
+            "goal_id": STORED_IDS["goals"][goal_name],
+            "amount": amount,
+            "note": note
+        })
+    
+    if not allocations:
+        print("No valid allocations specified.")
+        input("\nPress Enter to continue...")
+        return
+    
+    data = {
+        "surplus_id": get_input("Surplus ID (optional)", None),
+        "allocations": allocations
+    }
+    
+    params = {"user_id": user_id}
+    result = make_request("post", "/surplus/allocate", data, params)
+    
+    input("\nPress Enter to continue...")
+
 def main_menu():
     while True:
         print_header("CFO Command Center Test Client")
@@ -1224,6 +1549,7 @@ def main_menu():
         print("7. Categories")
         print("8. Plaid Integration")
         print("9. Budgets")
+        print("10. Rebalance & Surplus")
         print("0. Exit")
         
         choice = get_input("\nEnter your choice")
@@ -1355,6 +1681,28 @@ def main_menu():
         
         elif choice == "9":
             budget_menu()
+        
+        elif choice == "10":
+            while True:
+                print_header("Rebalance & Surplus Operations")
+                print("1. Suggest Goal Rebalancing")
+                print("2. Execute Goal Rebalancing")
+                print("3. Calculate Surplus")
+                print("4. Allocate Surplus")
+                print("0. Back to Main Menu")
+                
+                rebalance_choice = get_input("\nEnter your choice")
+                
+                if rebalance_choice == "0":
+                    break
+                elif rebalance_choice == "1":
+                    suggest_rebalance()
+                elif rebalance_choice == "2":
+                    execute_rebalance()
+                elif rebalance_choice == "3":
+                    calculate_surplus()
+                elif rebalance_choice == "4":
+                    allocate_surplus()
 
 if __name__ == "__main__":
     try:

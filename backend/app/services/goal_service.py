@@ -1,7 +1,8 @@
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import date
+from uuid import uuid4
 
 from backend.app.models.models import FinancialGoal, Couple, BankAccount, AllocationMap, LedgerEvent, LedgerEventType
 from backend.app.schemas.goals import FinancialGoalCreate, GoalAllocation
@@ -180,3 +181,77 @@ def reallocate_between_goals(db: Session, source_goal_id: str, dest_goal_id: str
     db.commit()
     
     return {"source_goal": source_goal, "dest_goal": dest_goal} 
+
+def suggest_goal_rebalance(db: Session, couple_id: str) -> List[Dict[str, Any]]:
+    """
+    Analyze goals and suggest optimal rebalancing based on priority and progress
+    """
+    # Get all goals for the couple
+    goals = db.query(FinancialGoal).filter(FinancialGoal.couple_id == couple_id).all()
+    if not goals:
+        return []
+        
+    # Logic to analyze goals and suggest rebalancing
+    suggestions = []
+    for goal in goals:
+        # ... similar logic from earlier example, but simpler
+        # Find goals that are high priority but underfunded
+        if goal.priority <= 2 and goal.current_allocation / goal.target_amount < 0.5:
+            # Find potential source goals
+            for source in goals:
+                if source.priority > goal.priority and source.current_allocation > 0:
+                    # ... calculate suggested amount
+                    suggestions.append({
+                        "source_goal_id": source.id,
+                        "source_goal_name": source.name,
+                        "dest_goal_id": goal.id,
+                        "dest_goal_name": goal.name,
+                        "suggested_amount": min(source.current_allocation * 0.2, 
+                                               goal.target_amount - goal.current_allocation)
+                    })
+    
+    return suggestions
+
+def batch_reallocate_goals(db: Session, rebalance_data: dict, user_id: str) -> Dict[str, Any]:
+    """
+    Process multiple goal reallocations in a single operation
+    """
+    results = {}
+    total_amount = 0
+    
+    # Process each reallocation move
+    for move in rebalance_data["moves"]:
+        # Use the existing reallocate_between_goals function
+        result = reallocate_between_goals(
+            db, 
+            move["source_goal_id"],
+            move["dest_goal_id"],
+            move["amount"],
+            user_id,
+            metadata={"batch_id": rebalance_data.get("rebalance_id", str(uuid4()))}
+        )
+        
+        # Store the result
+        key = f"{move['source_goal_id']}_to_{move['dest_goal_id']}"
+        results[key] = result
+        total_amount += move["amount"]
+    
+    # Create a summary ledger event
+    log_event = LedgerEvent(
+        event_type=LedgerEventType.SYSTEM,
+        amount=total_amount,
+        user_id=user_id,
+        event_metadata={
+            "action": "batch_rebalance",
+            "rebalance_id": rebalance_data.get("rebalance_id"),
+            "move_count": len(rebalance_data["moves"])
+        }
+    )
+    db.add(log_event)
+    db.commit()
+    
+    return {
+        "rebalance_id": rebalance_data.get("rebalance_id"),
+        "results": results,
+        "total_amount": total_amount
+    } 
