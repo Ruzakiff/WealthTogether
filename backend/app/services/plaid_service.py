@@ -211,16 +211,30 @@ def sync_transactions(access_token: str, db: Session, accounts: List[BankAccount
             plaid_item.last_sync_at = datetime.utcnow()
             db.commit()
         
+        # Create a mapping of Plaid account IDs to our account objects
+        account_map = {account.plaid_account_id: account for account in accounts}
+        
         # For each transaction, create a ledger event
         for transaction in added:
-            event_type = LedgerEventType.DEPOSIT if transaction['amount'] > 0 else LedgerEventType.WITHDRAWAL
-            create_ledger_event(db, LedgerEventCreate(
-                event_type=event_type,
-                amount=abs(transaction['amount']),
-                source_account_id=transaction['account_id'],
-                user_id=transaction['user_id'],
-                event_metadata={"transaction_id": transaction['transaction_id']}
-            ))
+            # Get the corresponding account object to find the user_id
+            plaid_account_id = transaction['account_id']
+            if plaid_account_id in account_map:
+                account = account_map[plaid_account_id]
+                
+                # Determine event type based on transaction amount
+                event_type = LedgerEventType.DEPOSIT if transaction['amount'] < 0 else LedgerEventType.WITHDRAWAL
+                
+                # Create the ledger event
+                create_ledger_event(db, LedgerEventCreate(
+                    event_type=event_type,
+                    amount=abs(transaction['amount']),
+                    source_account_id=account.id,  # Use our account ID, not Plaid's
+                    user_id=account.user_id,       # Get user_id from the account
+                    event_metadata={
+                        "transaction_id": transaction['transaction_id'],
+                        "description": transaction.get('name', 'Unknown Transaction')
+                    }
+                ))
         
         return {
             "status": "success", 

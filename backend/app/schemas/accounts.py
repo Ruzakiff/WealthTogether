@@ -22,3 +22,8 @@ class BankAccountResponse(BaseModel):
     
     class Config:
         from_attributes = True 
+
+class AccountAdjustment(BaseModel):
+    user_id: str
+    amount: float  # Can be positive (increase) or negative (decrease)
+    reason: Optional[str] = None 
