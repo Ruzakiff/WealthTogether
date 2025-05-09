@@ -28,6 +28,29 @@ def create_transaction(db: Session, transaction: TransactionCreate):
     db.commit()
     db.refresh(db_transaction)
     
+    # Create corresponding ledger event
+    event_type = LedgerEventType.DEPOSIT if transaction.amount > 0 else LedgerEventType.WITHDRAWAL
+    
+    # Get the user_id from the account
+    account = db.query(BankAccount).filter(BankAccount.id == transaction.account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail=f"Account with id {transaction.account_id} not found")
+    
+    log_event = LedgerEvent(
+        event_type=event_type,
+        amount=abs(transaction.amount),  # Ledger amounts should be positive
+        source_account_id=transaction.account_id,
+        user_id=account.user_id,
+        event_metadata={
+            "transaction_id": db_transaction.id,
+            "description": transaction.description,
+            "merchant_name": transaction.merchant_name,
+            "is_pending": transaction.is_pending
+        }
+    )
+    db.add(log_event)
+    db.commit()
+    
     return db_transaction
 
 def get_transactions_by_account(db: Session, account_id: str, 

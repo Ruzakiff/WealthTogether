@@ -16,6 +16,9 @@ from backend.app.models.models import User, BankAccount, PlaidItem, Transaction,
 from backend.app.schemas.transactions import TransactionCreate
 from backend.app.config import get_settings
 from backend.app.services.transaction_service import create_transaction
+from backend.app.services.ledger_service import create_ledger_event
+from backend.app.models.models import LedgerEventType
+from backend.app.schemas.ledger import LedgerEventCreate
 
 # Initialize Plaid client
 settings = get_settings()
@@ -207,6 +210,17 @@ def sync_transactions(access_token: str, db: Session, accounts: List[BankAccount
             plaid_item.cursor = cursor
             plaid_item.last_sync_at = datetime.utcnow()
             db.commit()
+        
+        # For each transaction, create a ledger event
+        for transaction in added:
+            event_type = LedgerEventType.DEPOSIT if transaction['amount'] > 0 else LedgerEventType.WITHDRAWAL
+            create_ledger_event(db, LedgerEventCreate(
+                event_type=event_type,
+                amount=abs(transaction['amount']),
+                source_account_id=transaction['account_id'],
+                user_id=transaction['user_id'],
+                event_metadata={"transaction_id": transaction['transaction_id']}
+            ))
         
         return {
             "status": "success", 

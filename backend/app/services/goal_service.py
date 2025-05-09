@@ -31,6 +31,21 @@ def create_financial_goal(db: Session, goal_data: FinancialGoalCreate):
     db.commit()
     db.refresh(new_goal)
     
+    # Create a ledger event for goal creation
+    log_event = LedgerEvent(
+        event_type=LedgerEventType.SYSTEM,
+        amount=goal_data.target_amount,
+        user_id=goal_data.created_by,  # Assuming this exists or can be passed
+        event_metadata={
+            "action": "goal_created",
+            "goal_id": str(new_goal.id),
+            "goal_name": new_goal.name,
+            "goal_type": str(new_goal.type)
+        }
+    )
+    db.add(log_event)
+    db.commit()
+    
     return new_goal
 
 def get_goals_by_couple(db: Session, couple_id: str) -> List[FinancialGoal]:
@@ -131,3 +146,37 @@ def allocate_to_goal(db: Session, allocation_data: GoalAllocation, user_id: str)
     # Return the updated goal
     db.refresh(goal)
     return goal 
+
+def reallocate_between_goals(db: Session, source_goal_id: str, dest_goal_id: str, 
+                            amount: float, user_id: str):
+    """Move allocation from one goal to another"""
+    
+    # Verify goals exist
+    source_goal = db.query(FinancialGoal).filter(FinancialGoal.id == source_goal_id).first()
+    dest_goal = db.query(FinancialGoal).filter(FinancialGoal.id == dest_goal_id).first()
+    
+    if not source_goal or not dest_goal:
+        raise HTTPException(status_code=404, detail="One or both goals not found")
+    
+    # Verify sufficient funds in source goal
+    if source_goal.current_allocation < amount:
+        raise HTTPException(status_code=400, 
+                           detail=f"Insufficient funds in source goal. Available: {source_goal.current_allocation}")
+    
+    # Update allocations
+    source_goal.current_allocation -= amount
+    dest_goal.current_allocation += amount
+    
+    # Create ledger event
+    log_event = LedgerEvent(
+        event_type=LedgerEventType.REALLOCATION,
+        amount=amount,
+        dest_goal_id=dest_goal_id,
+        user_id=user_id,
+        event_metadata={"source_goal_id": source_goal_id}
+    )
+    
+    db.add(log_event)
+    db.commit()
+    
+    return {"source_goal": source_goal, "dest_goal": dest_goal} 

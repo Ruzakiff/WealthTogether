@@ -4,8 +4,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
 from fastapi import HTTPException
 
-from backend.app.models.models import Budget, Transaction, Category
+from backend.app.models.models import Budget, Transaction, Category, LedgerEvent
 from backend.app.schemas.budgets import BudgetCreate, BudgetUpdate
+from backend.app.schemas.ledger import LedgerEventType
 
 def create_budget(db: Session, budget: BudgetCreate) -> Budget:
     """Create a new budget for a category"""
@@ -25,6 +26,22 @@ def create_budget(db: Session, budget: BudgetCreate) -> Budget:
     db.add(db_budget)
     db.commit()
     db.refresh(db_budget)
+    
+    # Create a ledger event
+    log_event = LedgerEvent(
+        event_type=LedgerEventType.SYSTEM,
+        amount=budget.amount,  # The budgeted amount
+        user_id=budget.created_by,  # Assuming this exists
+        event_metadata={
+            "action": "budget_created",
+            "category_id": str(db_budget.category_id),
+            "budget_id": str(db_budget.id),
+            "period": db_budget.period
+        }
+    )
+    db.add(log_event)
+    db.commit()
+    
     return db_budget
 
 def get_budgets(db: Session, couple_id: str) -> List[Budget]:
@@ -101,16 +118,45 @@ def update_budget(db: Session, budget_id: str, budget_update: BudgetUpdate) -> B
     for key, value in budget_update.dict(exclude_unset=True).items():
         setattr(budget, key, value)
     
+    # Log the budget update
+    log_event = LedgerEvent(
+        event_type=LedgerEventType.SYSTEM,
+        amount=budget.amount,  # Updated amount
+        user_id=budget_update.updated_by,  # Assuming this exists
+        event_metadata={
+            "action": "budget_updated",
+            "budget_id": budget_id,
+            "previous_amount": budget_update.previous_amount,
+            "new_amount": budget.amount
+        }
+    )
+    db.add(log_event)
     db.commit()
+    
     db.refresh(budget)
     return budget
 
-def delete_budget(db: Session, budget_id: str) -> Dict[str, bool]:
+def delete_budget(db: Session, budget_id: str, user_id: str) -> Dict[str, bool]:
     """Delete a budget"""
     budget = db.query(Budget).filter(Budget.id == budget_id).first()
     if not budget:
         raise HTTPException(status_code=404, detail="Budget not found")
     
+    # Create a ledger event before deleting the budget
+    log_event = LedgerEvent(
+        event_type=LedgerEventType.SYSTEM,
+        amount=budget.amount,  # Amount being un-budgeted
+        user_id=user_id,
+        event_metadata={
+            "action": "budget_deleted",
+            "budget_id": budget_id,
+            "category_id": str(budget.category_id),
+            "period": budget.period
+        }
+    )
+    db.add(log_event)
+    
+    # Now delete the budget
     db.delete(budget)
     db.commit()
     return {"success": True} 

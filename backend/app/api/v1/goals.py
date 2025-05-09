@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Dict
 
-from backend.app.schemas.goals import FinancialGoalCreate, FinancialGoalResponse, GoalAllocation
-from backend.app.services.goal_service import create_financial_goal, get_goals_by_couple, allocate_to_goal
+from backend.app.schemas.goals import FinancialGoalCreate, FinancialGoalResponse, GoalAllocation, GoalReallocation
+from backend.app.services.goal_service import create_financial_goal, get_goals_by_couple, allocate_to_goal, reallocate_between_goals
 from backend.app.database import get_db_session
 
 router = APIRouter()
@@ -42,4 +42,25 @@ async def allocate_funds(
     - Adjusts goal's current_allocation
     - Creates a LedgerEvent to track the action
     """
-    return allocate_to_goal(db, allocation_data, user_id) 
+    return allocate_to_goal(db, allocation_data, user_id)
+
+@router.post("/reallocate", response_model=Dict[str, FinancialGoalResponse])
+async def reallocate_funds(
+    reallocation_data: GoalReallocation,
+    user_id: str = Query(..., description="ID of the user performing the reallocation"),
+    db: Session = Depends(get_db_session)
+):
+    """
+    Reallocate funds from one goal to another.
+    
+    - Reduces allocation from source goal
+    - Increases allocation to destination goal
+    - Creates a REALLOCATION LedgerEvent to track the action
+    """
+    return reallocate_between_goals(
+        db, 
+        reallocation_data.source_goal_id,
+        reallocation_data.dest_goal_id,
+        reallocation_data.amount,
+        user_id
+    ) 

@@ -70,9 +70,10 @@ def update_budget_endpoint(
 @router.delete("/{budget_id}", response_model=Dict[str, bool])
 def delete_budget_endpoint(
     budget_id: str,
+    user_id: str = Query(..., description="ID of the user performing the deletion"),
     db: Session = Depends(get_db_session)
 ):
     """
     Delete a budget
     """
-    return delete_budget(db, budget_id) 
+    return delete_budget(db, budget_id, user_id) 

@@ -21,13 +21,13 @@ class GoalType(str, Enum):
     CUSTOM = "custom"
 
 class LedgerEventType(str, Enum):
-    ALLOCATION = "allocation"
-    REALLOCATION = "reallocation"
-    ADJUSTMENT = "adjustment"
-    DEPOSIT = "deposit"
-    WITHDRAWAL = "withdrawal"
-    SYSTEM = "system"
-    CATEGORIZATION = "categorization"
+    DEPOSIT = "DEPOSIT"
+    WITHDRAWAL = "WITHDRAWAL"
+    ALLOCATION = "ALLOCATION"
+    REALLOCATION = "REALLOCATION"
+    CATEGORIZATION = "CATEGORIZATION"
+    ADJUSTMENT = "ADJUSTMENT"  # For manual account adjustments
+    SYSTEM = "SYSTEM"  # For system events like goal/budget creation
 
 class Frequency(str, Enum):
     MONTHLY = "monthly"

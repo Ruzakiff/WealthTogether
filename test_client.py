@@ -996,187 +996,70 @@ def create_budget():
         return
     
     if not STORED_IDS["categories"]:
-        print("You need to create categories first.")
+        print("You need to create a category first.")
         input("\nPress Enter to continue...")
         return
     
-    # Select couple
+    if not STORED_IDS["users"]:
+        print("You need to create a user first.")
+        input("\nPress Enter to continue...")
+        return
+    
     print("Available couples:")
     for name, id in STORED_IDS["couples"].items():
         print(f"  - {name}: {id}")
     
-    couple_name = get_input("Select couple (name)")
+    couple_name = get_input("Select a couple (name)")
     
     if couple_name not in STORED_IDS["couples"]:
         print("Couple name not found.")
         input("\nPress Enter to continue...")
         return
     
-    # Select category
     print("\nAvailable categories:")
     for name, id in STORED_IDS["categories"].items():
         print(f"  - {name}: {id}")
     
-    category_name = get_input("Select category (name)")
+    category_name = get_input("Select a category (name)")
     
     if category_name not in STORED_IDS["categories"]:
         print("Category name not found.")
         input("\nPress Enter to continue...")
         return
     
-    # Get budget details
-    amount = get_input("Budget amount")
-    try:
-        amount = float(amount)
-    except ValueError:
-        print("Invalid amount. Please enter a number.")
+    print("\nAvailable users:")
+    for name, id in STORED_IDS["users"].items():
+        print(f"  - {name}: {id}")
+    
+    user_name = get_input("Select a user for created_by (name)")
+    
+    if user_name not in STORED_IDS["users"]:
+        print("User name not found.")
         input("\nPress Enter to continue...")
         return
     
+    amount = float(get_input("Amount", "100.0"))
     period = get_input("Period (monthly, weekly, etc.)", "monthly")
     
-    start_date = get_input("Start date (YYYY-MM-DD)", date.today().isoformat())
-    try:
-        # Validate the date format
-        date.fromisoformat(start_date)
-    except ValueError:
-        print("Invalid date format. Please use YYYY-MM-DD.")
-        input("\nPress Enter to continue...")
-        return
+    # Get today's date as default
+    import datetime
+    today = datetime.date.today().isoformat()
+    start_date = get_input("Start Date (YYYY-MM-DD)", today)
     
     data = {
         "couple_id": STORED_IDS["couples"][couple_name],
         "category_id": STORED_IDS["categories"][category_name],
         "amount": amount,
         "period": period,
-        "start_date": start_date
+        "start_date": start_date,
+        "created_by": STORED_IDS["users"][user_name]
     }
     
     result = make_request("post", "/budgets", data)
     if result and "id" in result:
-        budget_name = f"{category_name} Budget (${amount} {period})"
+        budget_name = f"{couple_name} - {category_name} (${amount})"
         STORED_IDS["budgets"][budget_name] = result["id"]
         print(f"\nStored budget ID for {budget_name}: {result['id']}")
-    
-    input("\nPress Enter to continue...")
-
-def list_budgets():
-    print_header("List Budgets")
-    
-    if not STORED_IDS["couples"]:
-        print("You need to create a couple first.")
-        input("\nPress Enter to continue...")
-        return
-    
-    print("Available couples:")
-    for name, id in STORED_IDS["couples"].items():
-        print(f"  - {name}: {id}")
-    
-    couple_name = get_input("Select couple (name)")
-    
-    if couple_name not in STORED_IDS["couples"]:
-        print("Couple name not found.")
-        input("\nPress Enter to continue...")
-        return
-    
-    params = {"couple_id": STORED_IDS["couples"][couple_name]}
-    
-    make_request("get", "/budgets", params=params)
-    input("\nPress Enter to continue...")
-
-def view_budget_analysis():
-    print_header("View Budget Analysis")
-    
-    analysis_type = get_input("Analysis type (all/specific)", "all")
-    
-    if analysis_type.lower() == "all":
-        if not STORED_IDS["couples"]:
-            print("You need to create a couple first.")
-            input("\nPress Enter to continue...")
-            return
-        
-        print("Available couples:")
-        for name, id in STORED_IDS["couples"].items():
-            print(f"  - {name}: {id}")
-        
-        couple_name = get_input("Select couple (name)")
-        
-        if couple_name not in STORED_IDS["couples"]:
-            print("Couple name not found.")
-            input("\nPress Enter to continue...")
-            return
-        
-        params = {"couple_id": STORED_IDS["couples"][couple_name]}
-        
-        # Optional date filtering
-        add_dates = get_input("Add date filtering? (y/n)", "n").lower() == "y"
-        if add_dates:
-            month = get_input("Month (1-12)", str(date.today().month))
-            try:
-                month = int(month)
-                if month < 1 or month > 12:
-                    raise ValueError("Month must be between 1 and 12")
-            except ValueError:
-                print("Invalid month. Please enter a number between 1 and 12.")
-                input("\nPress Enter to continue...")
-                return
-            
-            year = get_input("Year", str(date.today().year))
-            try:
-                year = int(year)
-            except ValueError:
-                print("Invalid year. Please enter a valid year.")
-                input("\nPress Enter to continue...")
-                return
-            
-            params["month"] = month
-            params["year"] = year
-        
-        make_request("get", "/budgets/analysis", params=params)
-    else:
-        if not STORED_IDS["budgets"]:
-            print("You need to create a budget first.")
-            input("\nPress Enter to continue...")
-            return
-        
-        print("Available budgets:")
-        for name, id in STORED_IDS["budgets"].items():
-            print(f"  - {name}: {id}")
-        
-        budget_name = get_input("Select budget (name)")
-        
-        if budget_name not in STORED_IDS["budgets"]:
-            print("Budget name not found.")
-            input("\nPress Enter to continue...")
-            return
-        
-        params = {}
-        
-        # Optional date filtering
-        add_dates = get_input("Add date filtering? (y/n)", "n").lower() == "y"
-        if add_dates:
-            month = get_input("Month (1-12)", str(date.today().month))
-            try:
-                month = int(month)
-                if month < 1 or month > 12:
-                    raise ValueError("Month must be between 1 and 12")
-            except ValueError:
-                print("Invalid month. Please enter a number between 1 and 12.")
-                input("\nPress Enter to continue...")
-                return
-            
-            year = get_input("Year", str(date.today().year))
-            try:
-                year = int(year)
-            except ValueError:
-                print("Invalid year. Please enter a valid year.")
-                input("\nPress Enter to continue...")
-                return
-            
-            params["month"] = month
-            params["year"] = year
-        
-        make_request("get", f"/budgets/{STORED_IDS['budgets'][budget_name]}/analysis", params=params)
     
     input("\nPress Enter to continue...")
 
@@ -1184,7 +1067,12 @@ def update_budget():
     print_header("Update Budget")
     
     if not STORED_IDS["budgets"]:
-        print("You need to create a budget first.")
+        print("No budgets have been created yet.")
+        input("\nPress Enter to continue...")
+        return
+    
+    if not STORED_IDS["users"]:
+        print("You need a user to update the budget.")
         input("\nPress Enter to continue...")
         return
     
@@ -1192,94 +1080,46 @@ def update_budget():
     for name, id in STORED_IDS["budgets"].items():
         print(f"  - {name}: {id}")
     
-    budget_name = get_input("Select budget (name)")
+    budget_name = get_input("Select a budget (name)")
     
     if budget_name not in STORED_IDS["budgets"]:
         print("Budget name not found.")
         input("\nPress Enter to continue...")
         return
     
-    print("\nFields to update (leave blank to skip):")
+    print("\nAvailable users:")
+    for name, id in STORED_IDS["users"].items():
+        print(f"  - {name}: {id}")
     
-    data = {}
+    user_name = get_input("Select a user for updated_by (name)")
     
-    # Optional: update category
-    if STORED_IDS["categories"]:
-        update_category = get_input("Update category? (y/n)", "n").lower() == "y"
-        if update_category:
-            print("\nAvailable categories:")
-            for name, id in STORED_IDS["categories"].items():
-                print(f"  - {name}: {id}")
-            
-            category_name = get_input("Select category (name)")
-            if category_name in STORED_IDS["categories"]:
-                data["category_id"] = STORED_IDS["categories"][category_name]
-    
-    # Update amount
-    amount_str = get_input("New amount (blank to skip)")
-    if amount_str:
-        try:
-            amount = float(amount_str)
-            data["amount"] = amount
-        except ValueError:
-            print("Invalid amount. Skipping.")
-    
-    # Update period
-    period = get_input("New period (monthly, weekly, etc. - blank to skip)")
-    if period:
-        data["period"] = period
-    
-    # Update start date
-    start_date = get_input("New start date (YYYY-MM-DD - blank to skip)")
-    if start_date:
-        try:
-            # Validate the date format
-            date.fromisoformat(start_date)
-            data["start_date"] = start_date
-        except ValueError:
-            print("Invalid date format. Skipping.")
-    
-    if not data:
-        print("No updates specified.")
+    if user_name not in STORED_IDS["users"]:
+        print("User name not found.")
         input("\nPress Enter to continue...")
         return
     
-    result = make_request("put", f"/budgets/{STORED_IDS['budgets'][budget_name]}", data)
+    # Get current budget details to capture previous amount
+    budget_id = STORED_IDS["budgets"][budget_name]
+    current_budget = make_request("get", f"/budgets/{budget_id}")
     
-    if result and "id" in result:
-        # If the category was updated, update the stored name
-        if "category_id" in data:
-            # Find the category name for the new ID
-            for cat_name, cat_id in STORED_IDS["categories"].items():
-                if cat_id == data["category_id"]:
-                    new_category_name = cat_name
-                    break
-            
-            # Create a new budget name
-            new_budget_name = f"{new_category_name} Budget"
-            if "amount" in data:
-                new_budget_name += f" (${data['amount']}"
-            else:
-                # Extract amount from existing name
-                import re
-                amount_match = re.search(r'\$([0-9.]+)', budget_name)
-                if amount_match:
-                    new_budget_name += f" (${amount_match.group(1)}"
-            
-            if "period" in data:
-                new_budget_name += f" {data['period']})"
-            else:
-                # Extract period from existing name
-                import re
-                period_match = re.search(r'\$(.*?)( [a-z]+)\)', budget_name)
-                if period_match:
-                    new_budget_name += f"{period_match.group(2)})"
-                else:
-                    new_budget_name += ")"
-            
-            # Replace old budget name with new one
-            STORED_IDS["budgets"][new_budget_name] = STORED_IDS["budgets"].pop(budget_name)
-            print(f"\nUpdated budget name to: {new_budget_name}")
+    if not current_budget:
+        print("Could not retrieve current budget details.")
+        input("\nPress Enter to continue...")
+        return
+    
+    previous_amount = current_budget.get("amount", 0)
+    
+    amount = float(get_input("New Amount", str(previous_amount)))
+    period = get_input("New Period (monthly, weekly, etc.)", current_budget.get("period", "monthly"))
+    
+    data = {
+        "amount": amount,
+        "period": period,
+        "updated_by": STORED_IDS["users"][user_name],
+        "previous_amount": previous_amount
+    }
+    
+    result = make_request("put", f"/budgets/{budget_id}", data)
     
     input("\nPress Enter to continue...")
 
@@ -1287,7 +1127,12 @@ def delete_budget():
     print_header("Delete Budget")
     
     if not STORED_IDS["budgets"]:
-        print("You need to create a budget first.")
+        print("No budgets have been created yet.")
+        input("\nPress Enter to continue...")
+        return
+    
+    if not STORED_IDS["users"]:
+        print("You need a user to delete the budget.")
         input("\nPress Enter to continue...")
         return
     
@@ -1295,36 +1140,60 @@ def delete_budget():
     for name, id in STORED_IDS["budgets"].items():
         print(f"  - {name}: {id}")
     
-    budget_name = get_input("Select budget to delete (name)")
+    budget_name = get_input("Select a budget to delete (name)")
     
     if budget_name not in STORED_IDS["budgets"]:
         print("Budget name not found.")
         input("\nPress Enter to continue...")
         return
     
-    confirm = get_input(f"Are you sure you want to delete {budget_name}? (y/n)", "n").lower() == "y"
-    if not confirm:
-        print("Operation cancelled.")
+    print("\nAvailable users:")
+    for name, id in STORED_IDS["users"].items():
+        print(f"  - {name}: {id}")
+    
+    user_name = get_input("Select a user performing the deletion (name)")
+    
+    if user_name not in STORED_IDS["users"]:
+        print("User name not found.")
         input("\nPress Enter to continue...")
         return
     
-    result = make_request("delete", f"/budgets/{STORED_IDS['budgets'][budget_name]}")
+    budget_id = STORED_IDS["budgets"][budget_name]
     
-    if result and result.get("success", False):
-        print(f"\nBudget {budget_name} deleted successfully!")
-        STORED_IDS["budgets"].pop(budget_name)
+    # Add user_id as a query parameter
+    params = {
+        "user_id": STORED_IDS["users"][user_name]
+    }
+    
+    result = make_request("delete", f"/budgets/{budget_id}", params=params)
+    
+    if result and result.get("success"):
+        print(f"\nBudget {budget_name} deleted successfully.")
+        # Remove from stored IDs
+        del STORED_IDS["budgets"][budget_name]
+    
+    input("\nPress Enter to continue...")
+
+def list_budgets():
+    print_header("List Stored Budgets")
+    
+    if not STORED_IDS["budgets"]:
+        print("No budgets have been created yet.")
+    else:
+        print("Available budgets:")
+        for name, id in STORED_IDS["budgets"].items():
+            print(f"  - {name}: {id}")
     
     input("\nPress Enter to continue...")
 
 def budget_menu():
     while True:
         print_header("Budget Operations")
-        
         print("1. Create Budget")
         print("2. List Budgets")
-        print("3. View Budget Analysis")
-        print("4. Update Budget")
-        print("5. Delete Budget")
+        print("3. Update Budget")
+        print("4. Delete Budget")
+        print("5. Get Budget Analysis")
         print("0. Back to Main Menu")
         
         budget_choice = get_input("\nEnter your choice")
@@ -1336,11 +1205,11 @@ def budget_menu():
         elif budget_choice == "2":
             list_budgets()
         elif budget_choice == "3":
-            view_budget_analysis()
-        elif budget_choice == "4":
             update_budget()
-        elif budget_choice == "5":
+        elif budget_choice == "4":
             delete_budget()
+        # elif budget_choice == "5":
+        #     get_budget_analysis()
 
 def main_menu():
     while True:

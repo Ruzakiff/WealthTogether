@@ -31,3 +31,8 @@ class GoalAllocation(BaseModel):
     account_id: str
     goal_id: str
     amount: float = Field(gt=0)
+
+class GoalReallocation(BaseModel):
+    source_goal_id: str
+    dest_goal_id: str
+    amount: float = Field(gt=0)
