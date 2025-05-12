@@ -36,4 +36,18 @@ def create_couple(db: Session, couple_data: CoupleCreate):
     db.commit()
     db.refresh(new_couple)
     
-    return new_couple 
+    return new_couple
+
+def get_couple_by_id(db: Session, couple_id: str):
+    """Service function to get a couple by ID"""
+    couple = db.query(Couple).filter(Couple.id == couple_id).first()
+    if not couple:
+        raise HTTPException(status_code=404, detail=f"Couple with id {couple_id} not found")
+    return couple
+
+def get_couples_by_user_id(db: Session, user_id: str):
+    """Service function to get all couples a user belongs to"""
+    couples = db.query(Couple).filter(
+        (Couple.partner_1_id == user_id) | (Couple.partner_2_id == user_id)
+    ).all()
+    return couples 
