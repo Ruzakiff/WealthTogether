@@ -86,6 +86,10 @@ def adjust_account_balance(db: Session, account_id: str, adjustment_amount: floa
     if account.user_id != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to adjust this account")
     
+    # Prevent negative balance
+    if account.balance + adjustment_amount < 0:
+        raise HTTPException(status_code=400, detail="Adjustment would result in negative balance")
+    
     # Record previous balance
     previous_balance = account.balance
     
