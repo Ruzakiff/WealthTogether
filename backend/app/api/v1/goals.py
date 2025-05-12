@@ -1,9 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List, Dict
+from typing import List, Dict, Any
+from uuid import UUID
 
-from backend.app.schemas.goals import FinancialGoalCreate, FinancialGoalResponse, GoalAllocation, GoalReallocation
-from backend.app.services.goal_service import create_financial_goal, get_goals_by_couple, allocate_to_goal, reallocate_between_goals
+from backend.app.schemas.goals import (
+    FinancialGoalCreate, FinancialGoalUpdate, FinancialGoalResponse, 
+    GoalAllocation, GoalReallocation
+)
+from backend.app.services.goal_service import (
+    create_financial_goal, get_goals_by_couple, allocate_to_goal, 
+    reallocate_between_goals, update_financial_goal, forecast_goal_completion,
+    suggest_goal_rebalance, batch_reallocate_goals
+)
 from backend.app.database import get_db_session
 
 router = APIRouter()
@@ -44,7 +52,7 @@ async def allocate_funds(
     """
     return allocate_to_goal(db, allocation_data, user_id)
 
-@router.post("/reallocate", response_model=Dict[str, FinancialGoalResponse])
+@router.post("/reallocate", response_model=Dict[str, Any])
 async def reallocate_funds(
     reallocation_data: GoalReallocation,
     user_id: str = Query(..., description="ID of the user performing the reallocation"),
@@ -53,14 +61,72 @@ async def reallocate_funds(
     """
     Reallocate funds from one goal to another.
     
-    - Reduces allocation from source goal
-    - Increases allocation to destination goal
-    - Creates a REALLOCATION LedgerEvent to track the action
+    - Moves funds between goals
+    - Updates both goals' current_allocation
+    - Creates a LedgerEvent to track the reallocation
     """
     return reallocate_between_goals(
-        db, 
+        db,
         reallocation_data.source_goal_id,
         reallocation_data.dest_goal_id,
         reallocation_data.amount,
         user_id
-    ) 
+    )
+
+@router.put("/{goal_id}", response_model=FinancialGoalResponse)
+async def update_goal(
+    goal_id: str, 
+    update_data: FinancialGoalUpdate, 
+    db: Session = Depends(get_db_session)
+):
+    """
+    Update an existing financial goal.
+    
+    - Can modify name, target amount, priority, deadline, or notes
+    - Returns the updated goal object
+    """
+    return update_financial_goal(db, goal_id, update_data)
+
+@router.post("/{goal_id}/forecast")
+async def forecast_goal(
+    goal_id: str,
+    monthly_contribution: float = Query(..., gt=0, description="Monthly contribution amount"),
+    db: Session = Depends(get_db_session)
+):
+    """
+    Forecast when a goal will be completed based on monthly contributions.
+    
+    - Projects months to completion
+    - Calculates estimated completion date
+    - Shows remaining amount needed
+    """
+    return forecast_goal_completion(db, goal_id, monthly_contribution)
+
+@router.get("/rebalance/suggest", response_model=List[Dict[str, Any]])
+async def suggest_rebalance(
+    couple_id: str = Query(..., description="ID of the couple to analyze goals for"),
+    db: Session = Depends(get_db_session)
+):
+    """
+    Get recommendations for rebalancing funds between goals.
+    
+    - Analyzes goal priorities and funding levels
+    - Suggests moving money from lower to higher priority goals
+    - Returns specific amounts and goal pairs for rebalancing
+    """
+    return suggest_goal_rebalance(db, couple_id)
+
+@router.post("/rebalance/commit", response_model=Dict[str, Any])
+async def batch_rebalance(
+    rebalance_data: Dict[str, Any],
+    user_id: str = Query(..., description="ID of the user performing the rebalance"),
+    db: Session = Depends(get_db_session)
+):
+    """
+    Process multiple goal reallocations in a single operation.
+    
+    - Takes a list of moves (source goal, destination goal, amount)
+    - Processes all moves in a batch
+    - Creates a single summary ledger event
+    """
+    return batch_reallocate_goals(db, rebalance_data, user_id) 

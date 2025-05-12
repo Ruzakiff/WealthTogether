@@ -16,6 +16,13 @@ class FinancialGoalCreate(BaseModel):
     notes: Optional[str] = None
     created_by: str  # Add this line
 
+class FinancialGoalUpdate(BaseModel):
+    name: Optional[str] = None
+    target_amount: Optional[float] = None
+    priority: Optional[int] = None
+    deadline: Optional[date] = None
+    notes: Optional[str] = None
+
 class FinancialGoalResponse(BaseModel):
     id: str
     couple_id: str
