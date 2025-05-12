@@ -114,25 +114,30 @@ def update_budget(db: Session, budget_id: str, budget_update: BudgetUpdate) -> B
     if not budget:
         raise HTTPException(status_code=404, detail="Budget not found")
     
-    # Update fields
-    for key, value in budget_update.dict(exclude_unset=True).items():
-        setattr(budget, key, value)
+    # Store previous amount before update
+    previous_amount = budget.amount
     
-    # Log the budget update
+    # Update fields
+    for key, value in budget_update.model_dump(exclude_unset=True).items():
+        if key not in ['updated_by', 'previous_amount']:  # Skip non-model fields
+            setattr(budget, key, value)
+    
+    # Create and commit the ledger event first
     log_event = LedgerEvent(
         event_type=LedgerEventType.SYSTEM,
-        amount=budget.amount,  # Updated amount
-        user_id=budget_update.updated_by,  # Assuming this exists
+        amount=budget.amount,
+        user_id=budget_update.updated_by,
         event_metadata={
             "action": "budget_updated",
-            "budget_id": budget_id,
-            "previous_amount": budget_update.previous_amount,
-            "new_amount": budget.amount
+            "budget_id": str(budget_id),  # Ensure it's a string
+            "previous_amount": float(previous_amount),
+            "new_amount": float(budget.amount)
         }
     )
     db.add(log_event)
-    db.commit()
     
+    # Now commit the budget update and ledger event together
+    db.commit()
     db.refresh(budget)
     return budget
 
@@ -145,18 +150,21 @@ def delete_budget(db: Session, budget_id: str, user_id: str) -> Dict[str, bool]:
     # Create a ledger event before deleting the budget
     log_event = LedgerEvent(
         event_type=LedgerEventType.SYSTEM,
-        amount=budget.amount,  # Amount being un-budgeted
+        amount=budget.amount,
         user_id=user_id,
         event_metadata={
             "action": "budget_deleted",
-            "budget_id": budget_id,
+            "budget_id": str(budget_id),  # Ensure it's a string
             "category_id": str(budget.category_id),
             "period": budget.period
         }
     )
     db.add(log_event)
     
-    # Now delete the budget
+    # Commit the ledger event first
+    db.commit()
+    
+    # Now delete the budget and commit again
     db.delete(budget)
     db.commit()
     return {"success": True} 
