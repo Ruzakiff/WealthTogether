@@ -3,11 +3,20 @@ import random
 from fastapi import status
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
+from typing import Dict, List, Any
 from uuid import uuid4
 
-from backend.app.models.models import LedgerEvent, LedgerEventType, User, BankAccount, FinancialGoal, Couple
-from backend.app.services.ledger_service import create_ledger_event, get_user_ledger_events, get_couple_ledger_events
+from backend.app.models.models import LedgerEvent, LedgerEventType, User, BankAccount, FinancialGoal, Couple, Category
+from backend.app.services.ledger_service import (
+    create_ledger_event, 
+    get_user_ledger_events,
+    get_couple_ledger_events,
+    summarize_ledger_by_category, 
+    calculate_monthly_surplus
+)
 from backend.app.schemas.ledger import LedgerEventCreate
+from backend.app.services.goal_service import forecast_goal_completion
+from backend.app.services.ai_service import generate_spending_insights
 
 
 # Service layer tests
@@ -411,6 +420,213 @@ def test_all_ledger_event_types(db_session, test_user, test_account, test_goal):
         )
         event = create_ledger_event(db_session, event_data)
         assert event.event_type == event_type
+
+
+def test_goal_forecast_with_ledger_history(db_session, test_user, test_goal, test_account):
+    """Test forecasting goal completion based on historical contribution patterns"""
+    from backend.app.services.goal_service import forecast_goal_completion
+    from datetime import datetime, timedelta
+    
+    # Create several allocation events over time to establish a pattern
+    base_date = datetime.now() - timedelta(days=90)
+    monthly_contribution = 500.0
+    
+    # Create three months of consistent allocations to establish a pattern
+    for i in range(3):
+        event_date = base_date + timedelta(days=30 * i)
+        event = LedgerEvent(
+            event_type=LedgerEventType.ALLOCATION,
+            amount=monthly_contribution,
+            source_account_id=test_account.id, 
+            dest_goal_id=test_goal.id,
+            user_id=test_user.id,
+            timestamp=event_date
+        )
+        db_session.add(event)
+    
+    # Update the goal's current allocation
+    test_goal.current_allocation = monthly_contribution * 3
+    db_session.commit()
+    
+    # Now forecast based on this history
+    forecast = forecast_goal_completion(db_session, test_goal.id, monthly_contribution)
+    
+    # Validate forecast results
+    assert "months_to_completion" in forecast
+    assert "projected_completion_date" in forecast
+    assert "remaining_amount" in forecast
+    assert forecast["monthly_contribution"] == monthly_contribution
+    
+    # Calculate expected months to completion
+    remaining = test_goal.target_amount - test_goal.current_allocation
+    expected_months = remaining / monthly_contribution
+    assert abs(forecast["months_to_completion"] - expected_months) < 0.1  # Allow small floating point difference
+
+
+def test_ledger_summary_by_category(db_session, test_user, test_account, test_couple):
+    """Test generating a spending summary from ledger events grouped by category"""
+    from backend.app.services.ledger_service import summarize_ledger_by_category
+    from backend.app.models.models import Category
+    import uuid
+    
+    # Create some categories
+    categories = []
+    for name in ["Housing", "Food", "Transportation", "Entertainment"]:
+        category = Category(
+            id=str(uuid.uuid4()),
+            name=name
+        )
+        categories.append(category)
+        db_session.add(category)
+    
+    db_session.commit()
+    
+    # Create ledger events with different categories in metadata
+    for i, category in enumerate(categories):
+        amount = 100.0 * (i + 1)  # Different amount for each category
+        event = LedgerEvent(
+            event_type=LedgerEventType.WITHDRAWAL,
+            amount=amount,
+            source_account_id=test_account.id,
+            user_id=test_user.id,
+            event_metadata={"category_id": category.id, "category_name": category.name}
+        )
+        db_session.add(event)
+    
+    db_session.commit()
+    
+    # Get summary by category
+    from_date = datetime.now() - timedelta(days=30)
+    to_date = datetime.now() + timedelta(days=1)  # Include today
+    
+    summary = summarize_ledger_by_category(
+        db_session, 
+        couple_id=test_couple.id,
+        from_date=from_date,
+        to_date=to_date
+    )
+    
+    # Validate summary
+    assert len(summary) > 0
+    # The summary should have an entry for each category
+    category_totals = {item["category_name"]: item["total_amount"] for item in summary}
+    
+    # Check expected values
+    assert "Housing" in category_totals
+    assert category_totals["Housing"] == 100.0
+    assert "Food" in category_totals
+    assert category_totals["Food"] == 200.0
+    # Total spending should match sum of all events
+    total_spending = sum(item["total_amount"] for item in summary)
+    assert total_spending == 1000.0  # 100 + 200 + 300 + 400
+
+
+def test_monthly_surplus_calculation(db_session, test_couple, test_user, test_account):
+    """Test calculating monthly surplus (income minus expenses)"""
+    from backend.app.services.ledger_service import calculate_monthly_surplus
+    
+    # Current month dates
+    today = datetime.now()
+    start_of_month = datetime(today.year, today.month, 1)
+    
+    # Create income events
+    income_event = LedgerEvent(
+        event_type=LedgerEventType.DEPOSIT,
+        amount=5000.0,
+        source_account_id=test_account.id,
+        user_id=test_user.id,
+        timestamp=start_of_month + timedelta(days=2),
+        event_metadata={"category": "Income", "source": "Salary"}
+    )
+    db_session.add(income_event)
+    
+    # Create expense events
+    expense_categories = ["Rent", "Groceries", "Utilities", "Entertainment"]
+    expense_amounts = [1500.0, 600.0, 200.0, 300.0]
+    
+    for category, amount in zip(expense_categories, expense_amounts):
+        expense_event = LedgerEvent(
+            event_type=LedgerEventType.WITHDRAWAL,
+            amount=amount,
+            source_account_id=test_account.id,
+            user_id=test_user.id,
+            timestamp=start_of_month + timedelta(days=random.randint(5, 20)),
+            event_metadata={"category": category}
+        )
+        db_session.add(expense_event)
+    
+    db_session.commit()
+    
+    # Calculate surplus
+    year = today.year
+    month = today.month
+    
+    surplus = calculate_monthly_surplus(db_session, test_couple.id, year, month)
+    
+    # Expected surplus: 5000 - (1500 + 600 + 200 + 300) = 2400
+    assert "income" in surplus
+    assert "expenses" in surplus
+    assert "surplus" in surplus
+    assert surplus["income"] == 5000.0
+    assert surplus["expenses"] == 2600.0
+    assert surplus["surplus"] == 2400.0
+    
+
+def test_ai_insights_from_ledger(db_session, test_couple, test_user, test_account):
+    """Test generating AI insights from ledger data"""
+    from backend.app.services.ai_service import generate_spending_insights
+    
+    # Create 3 months of transaction history
+    base_date = datetime.now() - timedelta(days=90)
+    
+    # Categories to track
+    categories = ["Groceries", "Dining", "Entertainment", "Transportation"]
+    
+    # Month 1: Normal spending
+    month1_date = base_date
+    month1_amounts = {"Groceries": 500, "Dining": 300, "Entertainment": 200, "Transportation": 150}
+    
+    # Month 2: Increased dining out
+    month2_date = base_date + timedelta(days=30)
+    month2_amounts = {"Groceries": 450, "Dining": 600, "Entertainment": 150, "Transportation": 150}
+    
+    # Month 3: More entertainment spending
+    month3_date = base_date + timedelta(days=60)
+    month3_amounts = {"Groceries": 480, "Dining": 400, "Entertainment": 350, "Transportation": 170}
+    
+    # Create events for each month
+    for month_date, amounts in [
+        (month1_date, month1_amounts),
+        (month2_date, month2_amounts),
+        (month3_date, month3_amounts)
+    ]:
+        for category, amount in amounts.items():
+            event = LedgerEvent(
+                event_type=LedgerEventType.WITHDRAWAL,
+                amount=float(amount),
+                source_account_id=test_account.id,
+                user_id=test_user.id,
+                timestamp=month_date + timedelta(days=random.randint(1, 28)),
+                event_metadata={"category": category}
+            )
+            db_session.add(event)
+    
+    db_session.commit()
+    
+    # Generate insights
+    insights = generate_spending_insights(db_session, test_couple.id, timeframe="last_3_months")
+    
+    # Validate insights structure
+    assert "trends" in insights
+    assert "anomalies" in insights
+    assert "recommendations" in insights
+    
+    # Specific insights that should be detected
+    dining_trend = next((t for t in insights["trends"] if "Dining" in t), None)
+    assert dining_trend is not None, "Should detect the dining spending spike"
+    
+    entertainment_trend = next((t for t in insights["trends"] if "Entertainment" in t), None)
+    assert entertainment_trend is not None, "Should detect the entertainment spending increase"
 
 
 @pytest.fixture
