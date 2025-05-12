@@ -630,3 +630,108 @@ def test_reallocate_through_api(client, test_user, test_goal, db_session):
     assert "dest_goal" in data
     assert data["source_goal"]["id"] == source_goal.id
     assert data["dest_goal"]["id"] == test_goal.id
+
+def test_forecast_simulate_endpoint(client, test_goal):
+    """Test the /forecast/simulate endpoint"""
+    # Test the endpoint
+    response = client.post(
+        f"/api/v1/forecast/simulate?goal_id={test_goal.id}&monthly_contribution=600.0"
+    )
+    
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert data["goal_id"] == test_goal.id
+    assert data["monthly_contribution"] == 600.0
+    assert "months_to_completion" in data
+    assert "completion_date" in data
+    assert "on_track" in data
+
+def test_rebalance_suggest_endpoint(client, test_couple, test_user, db_session):
+    """Test the /forecast/rebalance/suggest endpoint"""
+    # Create multiple goals with different priorities
+    from backend.app.models.models import FinancialGoal, GoalType
+    import uuid
+    
+    # Create a high-priority goal with low allocation
+    high_priority_goal = FinancialGoal(
+        id=str(uuid.uuid4()),
+        couple_id=test_couple.id,
+        name="High Priority Goal",
+        target_amount=10000.0,
+        type=GoalType.EMERGENCY,
+        current_allocation=1000.0,  # Only 10% funded
+        priority=1  # Highest priority
+    )
+    
+    # Create a low-priority goal with high allocation
+    low_priority_goal = FinancialGoal(
+        id=str(uuid.uuid4()),
+        couple_id=test_couple.id,
+        name="Low Priority Goal",
+        target_amount=5000.0,
+        type=GoalType.VACATION,
+        current_allocation=4000.0,  # 80% funded
+        priority=3  # Lower priority
+    )
+    
+    db_session.add_all([high_priority_goal, low_priority_goal])
+    db_session.commit()
+    
+    # Test the endpoint
+    response = client.get(
+        f"/api/v1/forecast/rebalance/suggest?couple_id={test_couple.id}"
+    )
+    
+    assert response.status_code == status.HTTP_200_OK
+    suggestions = response.json()
+    assert isinstance(suggestions, list)
+    # At least one suggestion should be returned
+    assert len(suggestions) > 0
+    
+    # Verify that first suggestion contains expected fields
+    first_suggestion = suggestions[0]
+    assert "source_goal_id" in first_suggestion
+    assert "dest_goal_id" in first_suggestion
+    assert "suggested_amount" in first_suggestion
+    assert "reason" in first_suggestion
+
+def test_rebalance_commit_endpoint(client, test_user, test_goal, db_session):
+    """Test the /forecast/rebalance/commit endpoint"""
+    # Create a source goal with allocation
+    from backend.app.models.models import FinancialGoal, GoalType
+    import uuid
+    
+    source_goal = FinancialGoal(
+        id=str(uuid.uuid4()),
+        couple_id=test_goal.couple_id,
+        name="Source Goal for Rebalance",
+        target_amount=5000.0,
+        type=GoalType.VACATION,
+        current_allocation=2000.0,
+        priority=3  # Lower priority
+    )
+    
+    db_session.add(source_goal)
+    db_session.commit()
+    
+    # Test the endpoint
+    response = client.post(
+        "/api/v1/forecast/rebalance/commit",
+        json={
+            "user_id": str(test_user.id),
+            "from_goal_id": str(source_goal.id),
+            "to_goal_id": str(test_goal.id),
+            "amount": 1000.0
+        }
+    )
+    
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    
+    # Check the structure matches the actual response
+    assert "source_goal" in data
+    assert "dest_goal" in data
+    assert data["source_goal"]["id"] == str(source_goal.id)
+    assert data["dest_goal"]["id"] == str(test_goal.id)
+    assert "amount" in data
+    assert data["amount"] == 1000.0

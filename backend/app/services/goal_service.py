@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from typing import List, Optional, Dict, Any
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from uuid import uuid4
 
 from backend.app.models.models import FinancialGoal, Couple, BankAccount, AllocationMap, LedgerEvent, LedgerEventType
@@ -423,4 +423,94 @@ def forecast_goal_completion(db: Session, goal_id: str, monthly_contribution: fl
         "monthly_contribution": monthly_contribution,
         "months_to_completion": months_to_completion,
         "projected_completion_date": projected_date
-    } 
+    }
+
+def simulate_goal_forecast(db: Session, goal_id: str, monthly_contribution: float) -> Dict[str, Any]:
+    """
+    Simulate how long it will take to complete a goal with a given monthly contribution.
+    
+    Args:
+        db: Database session
+        goal_id: ID of the goal to forecast
+        monthly_contribution: Monthly amount to be contributed
+        
+    Returns:
+        Dictionary with forecast details
+    """
+    # Get the goal
+    goal = db.query(FinancialGoal).filter(FinancialGoal.id == goal_id).first()
+    if not goal:
+        raise HTTPException(status_code=404, detail=f"Goal with id {goal_id} not found")
+    
+    # Calculate remaining amount
+    remaining_amount = goal.target_amount - goal.current_allocation
+    
+    if remaining_amount <= 0:
+        return {
+            "goal_id": goal.id,
+            "goal_name": goal.name,
+            "already_completed": True,
+            "target_amount": goal.target_amount,
+            "current_allocation": goal.current_allocation,
+            "completion_percentage": 100
+        }
+    
+    if monthly_contribution <= 0:
+        raise HTTPException(status_code=400, detail="Monthly contribution must be positive")
+    
+    # Calculate months to completion
+    months_to_completion = remaining_amount / monthly_contribution
+    
+    # Round up to the nearest month
+    months_rounded = int(months_to_completion)
+    if months_to_completion > months_rounded:
+        months_rounded += 1
+    
+    # Calculate completion date
+    today = date.today()
+    completion_date = today + timedelta(days=30 * months_rounded)
+    
+    # Check if there's a deadline
+    on_track = True
+    if goal.deadline:
+        on_track = completion_date <= goal.deadline
+    
+    return {
+        "goal_id": goal.id,
+        "goal_name": goal.name,
+        "target_amount": goal.target_amount,
+        "current_allocation": goal.current_allocation,
+        "remaining_amount": remaining_amount,
+        "monthly_contribution": monthly_contribution,
+        "months_to_completion": months_rounded,
+        "completion_date": completion_date.isoformat(),
+        "completion_percentage": (goal.current_allocation / goal.target_amount) * 100,
+        "has_deadline": goal.deadline is not None,
+        "deadline": goal.deadline.isoformat() if goal.deadline else None,
+        "on_track": on_track
+    }
+
+def commit_goal_rebalance(
+    db: Session, 
+    user_id: str,
+    from_goal_id: str,
+    to_goal_id: str,
+    amount: float
+) -> Dict[str, Any]:
+    """
+    Commit a rebalancing action by moving funds from one goal to another.
+    This is just a wrapper around reallocate_between_goals for API consistency.
+    """
+    # Validate inputs
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+    
+    # Use the existing reallocate_between_goals function
+    return reallocate_between_goals(
+        db=db,
+        source_goal_id=from_goal_id,
+        dest_goal_id=to_goal_id,
+        amount=amount,
+        user_id=user_id,
+        metadata={"action": "goal_rebalance_api"}
+    ) 
