@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
 from backend.app.models.models import User
-from backend.app.schemas.users import UserCreate
+from backend.app.schemas.users import UserCreate, UserUpdate
 
 def create_user(db: Session, user_data: UserCreate):
     """Service function to create a new user"""
@@ -33,4 +33,24 @@ def get_user_by_id(db: Session, user_id: str):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail=f"User with id {user_id} not found")
+    return user
+
+def get_user_by_email(db: Session, email: str):
+    """Service function to get a user by email"""
+    return db.query(User).filter(User.email == email).first()
+
+def update_user(db: Session, user_id: str, user_data: UserUpdate):
+    """Service function to update a user's information"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User with id {user_id} not found")
+    
+    # Update user attributes
+    if user_data.display_name is not None:
+        user.display_name = user_data.display_name
+    
+    # Update any other fields here when they're added to the schema
+    
+    db.commit()
+    db.refresh(user)
     return user 
