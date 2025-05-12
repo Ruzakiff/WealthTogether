@@ -1,9 +1,0 @@
-email-validator
-fastapi
-sqlalchemy
-uvicorn
-python-dotenv
-python-decouple
-requests
-plaid-python
-pydantic-settings
