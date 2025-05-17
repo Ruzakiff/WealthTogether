@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List, Optional
-from datetime import date
+from typing import List, Optional, Dict, Any
+from datetime import date, datetime, timezone
 
 from backend.app.schemas.transactions import TransactionCreate, TransactionResponse, TransactionCategorize
 from backend.app.services.transaction_service import (
@@ -11,6 +11,9 @@ from backend.app.services.transaction_service import (
     categorize_transaction
 )
 from backend.app.database import get_db_session
+from backend.app.models.models import BankAccount, LedgerEvent, LedgerEventType
+from backend.app.schemas.allocation_rules import ExecuteRulesRequest
+from backend.app.services.allocation_rule_service import execute_account_rules
 
 router = APIRouter()
 
@@ -70,4 +73,68 @@ async def categorize_transaction_endpoint(
     - Creates a ledger event to track the change
     - User must own the account the transaction belongs to
     """
-    return categorize_transaction(db, categorize_data, user_id) 
+    return categorize_transaction(db, categorize_data, user_id)
+
+@router.post("/simulate-deposit", response_model=Dict[str, Any])
+async def simulate_deposit(
+    deposit_data: Dict[str, Any],
+    user_id: str = Query(..., description="ID of the user"),
+    db: Session = Depends(get_db_session)
+):
+    """
+    Simulate a deposit into an account and trigger any auto allocation rules.
+    
+    - For testing/demo purposes only
+    - Simulates what would happen when a real deposit is detected
+    - Executes all active rules for the account
+    """
+    account_id = deposit_data.get("account_id")
+    amount = deposit_data.get("amount")
+    
+    if not account_id or not amount:
+        raise HTTPException(status_code=400, detail="Account ID and amount are required")
+    
+    # Get the account and verify ownership
+    account = db.query(BankAccount).filter(
+        BankAccount.id == account_id,
+        BankAccount.user_id == user_id
+    ).first()
+    
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found or not owned by user")
+    
+    # Update account balance to simulate deposit
+    account.balance += amount
+    db.commit()
+    
+    # Create a ledger event for the deposit
+    deposit_event = LedgerEvent(
+        event_type=LedgerEventType.DEPOSIT,
+        user_id=user_id,
+        amount=amount,
+        source_account_id=account_id,
+        event_metadata={
+            "description": deposit_data.get("description", "Simulated deposit")
+        }
+    )
+    db.add(deposit_event)
+    db.commit()
+    
+    # Execute auto allocation rules
+    execute_request = ExecuteRulesRequest(
+        account_id=account_id,
+        deposit_amount=amount,
+        manual_trigger=True
+    )
+    
+    results = execute_account_rules(db, execute_request, user_id)
+    
+    # Calculate total allocated
+    total_allocated = sum(item["amount"] for item in results if item["success"])
+    
+    return {
+        "deposit_amount": amount,
+        "rules_executed": len(results),
+        "total_allocated": total_allocated,
+        "rule_results": results
+    } 

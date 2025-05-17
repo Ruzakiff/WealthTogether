@@ -39,6 +39,10 @@ class EntryType(str, Enum):
     CELEBRATION = "celebration"
     CONCERN = "concern"
 
+class AllocationTrigger(str, Enum):
+    DEPOSIT = "deposit"
+    SCHEDULE = "schedule"
+
 # --- SQLALCHEMY MODELS ---
 
 class User(Base):
@@ -47,6 +51,7 @@ class User(Base):
     email = Column(String, unique=True, nullable=False)
     display_name = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    allocation_rules = relationship("AutoAllocationRule", back_populates="user")
 
 class Couple(Base):
     __tablename__ = "couples"
@@ -214,3 +219,20 @@ class Budget(Base):
     # Relationships
     category = relationship("Category")
     couple = relationship("Couple")
+
+class AutoAllocationRule(Base):
+    __tablename__ = "auto_allocation_rules"
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    user_id = Column(String, ForeignKey("users.id"))
+    source_account_id = Column(String, ForeignKey("bank_accounts.id"))
+    goal_id = Column(String, ForeignKey("financial_goals.id"))
+    percent = Column(Float)  # percentage of deposit/available funds to allocate
+    trigger = Column(String, default=AllocationTrigger.DEPOSIT)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_executed = Column(DateTime, nullable=True)
+    
+    # Relationships
+    user = relationship("User", back_populates="allocation_rules")
+    source_account = relationship("BankAccount")
+    goal = relationship("FinancialGoal")

@@ -127,3 +127,28 @@ def test_goal(db_session, test_couple):
     db_session.commit()
     db_session.refresh(goal)
     return goal 
+
+@pytest.fixture
+def test_allocation_rule(db_session, test_user, test_account, test_goal):
+    """Create a test allocation rule"""
+    from backend.app.models.models import AutoAllocationRule, AllocationTrigger
+    
+    rule = AutoAllocationRule(
+        id=str(uuid4()),
+        user_id=test_user.id,
+        source_account_id=test_account.id,
+        goal_id=test_goal.id,
+        percent=10.0,
+        trigger=AllocationTrigger.DEPOSIT,
+        is_active=True
+    )
+    
+    db_session.add(rule)
+    db_session.commit()
+    db_session.refresh(rule)
+    
+    yield rule
+    
+    # Clean up
+    db_session.delete(rule)
+    db_session.commit()
