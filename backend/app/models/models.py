@@ -58,6 +58,7 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     allocation_rules = relationship("AutoAllocationRule", back_populates="user")
     journal_entries = relationship("JournalEntry", back_populates="user")
+    goal_reactions = relationship("GoalReaction", back_populates="user")
 
 class Couple(Base):
     __tablename__ = "couples"
@@ -92,6 +93,7 @@ class FinancialGoal(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     deadline = Column(DateTime, nullable=True)
     journal_entries = relationship("JournalEntry", back_populates="goal")
+    reactions = relationship("GoalReaction", back_populates="goal")
 
 class AllocationMap(Base):
     __tablename__ = "goal_account_allocations"
@@ -168,9 +170,13 @@ class GoalReaction(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     user_id = Column(String, ForeignKey("users.id"))
     goal_id = Column(String, ForeignKey("financial_goals.id"))
-    reaction_type = Column(String)  # emoji or stamp identifier
+    reaction_type = Column(String)  # Could use an enum for standard reactions: "happy", "excited", "concerned", etc.
     note = Column(String, nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("User", back_populates="goal_reactions")
+    goal = relationship("FinancialGoal", back_populates="reactions")
 
 class Category(Base):
     __tablename__ = "categories"
