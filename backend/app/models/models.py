@@ -5,7 +5,7 @@ from enum import Enum
 
 from pydantic import BaseModel
 from sqlalchemy import (
-    Column, String, Integer, DateTime, Float, Boolean, ForeignKey, Enum as PgEnum, JSON, Table, Date
+    Column, String, Integer, DateTime, Float, Boolean, ForeignKey, Enum as PgEnum, JSON, Table, Date, Text
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -43,6 +43,11 @@ class AllocationTrigger(str, Enum):
     DEPOSIT = "deposit"
     SCHEDULE = "schedule"
 
+class JournalEntryType(str, Enum):
+    REFLECTION = "reflection"
+    CELEBRATION = "celebration"
+    CONCERN = "concern"
+
 # --- SQLALCHEMY MODELS ---
 
 class User(Base):
@@ -52,6 +57,7 @@ class User(Base):
     display_name = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     allocation_rules = relationship("AutoAllocationRule", back_populates="user")
+    journal_entries = relationship("JournalEntry", back_populates="user")
 
 class Couple(Base):
     __tablename__ = "couples"
@@ -59,6 +65,7 @@ class Couple(Base):
     partner_1_id = Column(String, ForeignKey("users.id"))
     partner_2_id = Column(String, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
+    journal_entries = relationship("JournalEntry", back_populates="couple")
 
 class BankAccount(Base):
     __tablename__ = "bank_accounts"
@@ -84,6 +91,7 @@ class FinancialGoal(Base):
     notes = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     deadline = Column(DateTime, nullable=True)
+    journal_entries = relationship("JournalEntry", back_populates="goal")
 
 class AllocationMap(Base):
     __tablename__ = "goal_account_allocations"
@@ -144,9 +152,16 @@ class JournalEntry(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     user_id = Column(String, ForeignKey("users.id"))
     couple_id = Column(String, ForeignKey("couples.id"))
-    entry_type = Column(PgEnum(EntryType))
-    content = Column(String)
+    goal_id = Column(String, ForeignKey("financial_goals.id"), nullable=True)
+    entry_type = Column(PgEnum(JournalEntryType))
+    content = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
+    is_private = Column(Boolean, default=False)
+    
+    # Relationships
+    user = relationship("User", back_populates="journal_entries")
+    couple = relationship("Couple", back_populates="journal_entries")
+    goal = relationship("FinancialGoal", back_populates="journal_entries")
 
 class GoalReaction(Base):
     __tablename__ = "goal_reactions"
