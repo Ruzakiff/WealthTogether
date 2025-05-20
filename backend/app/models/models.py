@@ -48,6 +48,25 @@ class JournalEntryType(str, Enum):
     CELEBRATION = "celebration"
     CONCERN = "concern"
 
+class ApprovalActionType(str, Enum):
+    """Types of actions that can require approval"""
+    BUDGET_CREATE = "budget_create"
+    BUDGET_UPDATE = "budget_update"
+    GOAL_CREATE = "goal_create"
+    GOAL_UPDATE = "goal_update"
+    ALLOCATION = "allocation"
+    REALLOCATION = "reallocation"
+    AUTO_RULE_CREATE = "auto_rule_create"
+    AUTO_RULE_UPDATE = "auto_rule_update"
+
+class ApprovalStatus(str, Enum):
+    """Status of an approval request"""
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    CANCELED = "canceled"
+
 # --- SQLALCHEMY MODELS ---
 
 class User(Base):
@@ -56,9 +75,13 @@ class User(Base):
     email = Column(String, unique=True, nullable=False)
     display_name = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
     allocation_rules = relationship("AutoAllocationRule", back_populates="user")
     journal_entries = relationship("JournalEntry", back_populates="user")
     goal_reactions = relationship("GoalReaction", back_populates="user")
+    initiated_approvals = relationship("PendingApproval", foreign_keys="PendingApproval.initiated_by", back_populates="initiator")
+    resolved_approvals = relationship("PendingApproval", foreign_keys="PendingApproval.resolved_by", back_populates="resolver")
 
 class Couple(Base):
     __tablename__ = "couples"
@@ -66,7 +89,11 @@ class Couple(Base):
     partner_1_id = Column(String, ForeignKey("users.id"))
     partner_2_id = Column(String, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
     journal_entries = relationship("JournalEntry", back_populates="couple")
+    pending_approvals = relationship("PendingApproval", back_populates="couple")
+    approval_settings = relationship("ApprovalSettings", back_populates="couple", uselist=False)
 
 class BankAccount(Base):
     __tablename__ = "bank_accounts"
@@ -78,6 +105,8 @@ class BankAccount(Base):
     institution_name = Column(String, nullable=True)
     is_manual = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
     transactions = relationship("Transaction", back_populates="account")
 
 class FinancialGoal(Base):
@@ -92,6 +121,8 @@ class FinancialGoal(Base):
     notes = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     deadline = Column(DateTime, nullable=True)
+    
+    # Relationships
     journal_entries = relationship("JournalEntry", back_populates="goal")
     reactions = relationship("GoalReaction", back_populates="goal")
 
@@ -241,14 +272,62 @@ class Budget(Base):
     category = relationship("Category")
     couple = relationship("Couple")
 
-class AutoAllocationRule(Base):
-    __tablename__ = "auto_allocation_rules"
+class PendingApproval(Base):
+    """Partner approval workflow for financial actions"""
+    __tablename__ = "pending_approvals"
+
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
-    user_id = Column(String, ForeignKey("users.id"))
-    source_account_id = Column(String, ForeignKey("bank_accounts.id"))
-    goal_id = Column(String, ForeignKey("financial_goals.id"))
-    percent = Column(Float)  # percentage of deposit/available funds to allocate
-    trigger = Column(String, default=AllocationTrigger.DEPOSIT)
+    couple_id = Column(String, ForeignKey("couples.id"), nullable=False)
+    initiated_by = Column(String, ForeignKey("users.id"), nullable=False)
+    action_type = Column(String, nullable=False)
+    payload = Column(JSON, nullable=False)
+    status = Column(String, default=ApprovalStatus.PENDING.value)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(String, ForeignKey("users.id"), nullable=True)
+    resolution_note = Column(String, nullable=True)
+    
+    # Relationships
+    couple = relationship("Couple", back_populates="pending_approvals")
+    initiator = relationship("User", foreign_keys=[initiated_by], back_populates="initiated_approvals")
+    resolver = relationship("User", foreign_keys=[resolved_by], back_populates="resolved_approvals")
+
+class ApprovalSettings(Base):
+    """Settings for approval thresholds and behavior"""
+    __tablename__ = "approval_settings"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    couple_id = Column(String, ForeignKey("couples.id"), nullable=False, unique=True)
+    enabled = Column(Boolean, default=True)
+    
+    # Thresholds
+    budget_creation_threshold = Column(Float, default=500.0)
+    budget_update_threshold = Column(Float, default=200.0)
+    goal_allocation_threshold = Column(Float, default=500.0)
+    goal_reallocation_threshold = Column(Float, default=300.0)
+    auto_rule_threshold = Column(Float, default=300.0)
+    
+    # Configuration
+    approval_expiration_hours = Column(Integer, default=72)  # Default: 3 days
+    notify_on_create = Column(Boolean, default=True)
+    notify_on_resolve = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    couple = relationship("Couple", back_populates="approval_settings")
+
+class AutoAllocationRule(Base):
+    """Automated fund distribution rules"""
+    __tablename__ = "auto_allocation_rules"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    source_account_id = Column(String, ForeignKey("bank_accounts.id"), nullable=False)
+    goal_id = Column(String, ForeignKey("financial_goals.id"), nullable=False)
+    percent = Column(Float, nullable=False)  # Changed from 'percentage' to 'percent'
+    trigger = Column(PgEnum(AllocationTrigger), default=AllocationTrigger.DEPOSIT)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_executed = Column(DateTime, nullable=True)
