@@ -1,27 +1,56 @@
 from datetime import datetime, date
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
 from fastapi import HTTPException
 
-from backend.app.models.models import Budget, Transaction, Category, LedgerEvent
+from backend.app.models.models import Budget, Transaction, Category, LedgerEvent, Couple, ApprovalStatus, ApprovalActionType
 from backend.app.schemas.budgets import BudgetCreate, BudgetUpdate
 from backend.app.schemas.ledger import LedgerEventType
+from backend.app.schemas.approvals import ApprovalCreate
+from backend.app.services.approval_service import check_approval_required, create_pending_approval
 
-def create_budget(db: Session, budget: BudgetCreate) -> Budget:
+def create_budget(db: Session, budget: BudgetCreate) -> Dict[str, Any]:
     """Create a new budget for a category"""
     # Check if category exists
     category = db.query(Category).filter(Category.id == budget.category_id).first()
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
     
+    # Check if approval is required
+    if check_approval_required(db, budget.couple_id, ApprovalActionType.BUDGET_CREATE, amount=budget.amount):
+        # Create approval request
+        budget_dict = budget.dict() if hasattr(budget, 'dict') else budget.model_dump()
+        
+        # Serialize date objects to strings
+        if 'start_date' in budget_dict and isinstance(budget_dict['start_date'], date):
+            budget_dict['start_date'] = budget_dict['start_date'].isoformat()
+            
+        approval_data = ApprovalCreate(
+            couple_id=budget.couple_id,
+            initiated_by=budget.created_by,
+            action_type=ApprovalActionType.BUDGET_CREATE,
+            payload=budget_dict
+        )
+        approval = create_pending_approval(db, approval_data)
+        return {
+            "status": "pending_approval",
+            "message": "Budget creation requires partner approval",
+            "approval_id": approval.id
+        }
+    
+    # If no approval required, create budget directly
+    return create_budget_internal(db, budget.dict() if hasattr(budget, 'dict') else budget.model_dump())
+
+def create_budget_internal(db: Session, budget_data: Dict[str, Any]) -> Budget:
+    """Internal function to create budget once approved"""
     # Create new budget
     db_budget = Budget(
-        couple_id=budget.couple_id,
-        category_id=budget.category_id,
-        amount=budget.amount,
-        period=budget.period,
-        start_date=budget.start_date
+        couple_id=budget_data["couple_id"],
+        category_id=budget_data["category_id"],
+        amount=budget_data["amount"],
+        period=budget_data["period"],
+        start_date=budget_data["start_date"]
     )
     db.add(db_budget)
     db.commit()
@@ -30,8 +59,8 @@ def create_budget(db: Session, budget: BudgetCreate) -> Budget:
     # Create a ledger event
     log_event = LedgerEvent(
         event_type=LedgerEventType.SYSTEM,
-        amount=budget.amount,  # The budgeted amount
-        user_id=budget.created_by,  # Assuming this exists
+        amount=budget_data["amount"],
+        user_id=budget_data["created_by"],
         event_metadata={
             "action": "budget_created",
             "category_id": str(db_budget.category_id),
@@ -108,8 +137,49 @@ def get_all_budgets_spending(db: Session, couple_id: str, month: int = None, yea
     
     return results
 
-def update_budget(db: Session, budget_id: str, budget_update: BudgetUpdate) -> Budget:
+def update_budget(db: Session, budget_id: str, budget_update: BudgetUpdate) -> Union[Dict[str, Any], Budget]:
     """Update an existing budget"""
+    budget = db.query(Budget).filter(Budget.id == budget_id).first()
+    if not budget:
+        raise HTTPException(status_code=404, detail="Budget not found")
+    
+    # Check if approval is required for the update (only when amount is being changed)
+    if budget_update.amount is not None and budget_update.amount != budget.amount:
+        # Get the couple_id from the budget
+        couple_id = budget.couple_id
+        
+        # Check if the change requires approval
+        # We're checking the absolute difference between new and old amount
+        amount_difference = abs(budget_update.amount - budget.amount)
+        if check_approval_required(db, couple_id, ApprovalActionType.BUDGET_UPDATE, amount=amount_difference):
+            # Store the current budget data for the approval payload
+            update_data = budget_update.dict(exclude_unset=True) if hasattr(budget_update, 'dict') else budget_update.model_dump(exclude_unset=True)
+            update_data["budget_id"] = budget_id
+            update_data["previous_amount"] = budget.amount
+            
+            # Serialize date objects to strings
+            if 'start_date' in update_data and isinstance(update_data['start_date'], date):
+                update_data['start_date'] = update_data['start_date'].isoformat()
+            
+            # Create approval request
+            approval_data = ApprovalCreate(
+                couple_id=couple_id,
+                initiated_by=budget_update.updated_by,
+                action_type=ApprovalActionType.BUDGET_UPDATE,
+                payload=update_data
+            )
+            approval = create_pending_approval(db, approval_data)
+            return {
+                "status": "pending_approval",
+                "message": "Budget update requires partner approval",
+                "approval_id": approval.id
+            }
+    
+    # If no approval required, update budget directly
+    return update_budget_internal(db, budget_id, budget_update.dict(exclude_unset=True) if hasattr(budget_update, 'dict') else budget_update.model_dump(exclude_unset=True))
+
+def update_budget_internal(db: Session, budget_id: str, update_data: Dict[str, Any]) -> Budget:
+    """Internal function to update budget once approved"""
     budget = db.query(Budget).filter(Budget.id == budget_id).first()
     if not budget:
         raise HTTPException(status_code=404, detail="Budget not found")
@@ -118,15 +188,15 @@ def update_budget(db: Session, budget_id: str, budget_update: BudgetUpdate) -> B
     previous_amount = budget.amount
     
     # Update fields
-    for key, value in budget_update.model_dump(exclude_unset=True).items():
-        if key not in ['updated_by', 'previous_amount']:  # Skip non-model fields
+    for key, value in update_data.items():
+        if key not in ['updated_by', 'previous_amount', 'budget_id']:  # Skip non-model fields
             setattr(budget, key, value)
     
-    # Create and commit the ledger event first
+    # Create and commit the ledger event
     log_event = LedgerEvent(
         event_type=LedgerEventType.SYSTEM,
         amount=budget.amount,
-        user_id=budget_update.updated_by,
+        user_id=update_data.get('updated_by'),
         event_metadata={
             "action": "budget_updated",
             "budget_id": str(budget_id),  # Ensure it's a string

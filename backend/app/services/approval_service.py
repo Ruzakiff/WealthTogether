@@ -187,16 +187,56 @@ def update_approval_status(
 
 # Execute an approved action
 def execute_approved_action(db: Session, approval: PendingApproval) -> Dict[str, Any]:
-    """Execute the action from an approved request"""
+    """Execute the action specified in the approved request."""
+    action_type = approval.action_type
+    payload = approval.payload
     
-    # This is a placeholder function that will need to be updated
-    # as we implement different approval actions
-    if approval.action_type == ApprovalActionType.BUDGET_CREATE.value:
-        # Here we would import and call the budget creation function
-        return {"message": "Budget creation would be executed here"}
+    # Process date fields in payload if present
+    if "start_date" in payload and isinstance(payload["start_date"], str):
+        from datetime import date
+        payload["start_date"] = date.fromisoformat(payload["start_date"])
     
-    elif approval.action_type == ApprovalActionType.BUDGET_UPDATE.value:
-        return {"message": "Budget update would be executed here"}
+    if action_type == ApprovalActionType.BUDGET_CREATE.value:
+        from backend.app.services.budget_service import create_budget_internal
+        result = create_budget_internal(db, payload)
+        
+        # Convert the SQLAlchemy model to a dictionary for JSON serialization
+        if hasattr(result, "__dict__"):
+            # Handle SQLAlchemy models by converting to dict
+            result_dict = {
+                "id": str(result.id),
+                "couple_id": str(result.couple_id),
+                "category_id": str(result.category_id),
+                "amount": result.amount,
+                "period": result.period,
+                "start_date": result.start_date.isoformat() if hasattr(result.start_date, "isoformat") else str(result.start_date),
+                "created_at": result.created_at.isoformat() if hasattr(result.created_at, "isoformat") else str(result.created_at)
+            }
+            return result_dict
+        return result
+    
+    elif action_type == ApprovalActionType.BUDGET_UPDATE.value:
+        from backend.app.services.budget_service import update_budget_internal
+        budget_id = payload.pop("budget_id", None)
+        if not budget_id:
+            raise HTTPException(status_code=400, detail="Missing budget_id in approval payload")
+        
+        result = update_budget_internal(db, budget_id, payload)
+        
+        # Convert the SQLAlchemy model to a dictionary for JSON serialization
+        if hasattr(result, "__dict__"):
+            # Handle SQLAlchemy models
+            result_dict = {
+                "id": str(result.id),
+                "couple_id": str(result.couple_id),
+                "category_id": str(result.category_id),
+                "amount": result.amount,
+                "period": result.period,
+                "start_date": result.start_date.isoformat() if hasattr(result.start_date, "isoformat") else str(result.start_date),
+                "created_at": result.created_at.isoformat() if hasattr(result.created_at, "isoformat") else str(result.created_at)
+            }
+            return result_dict
+        return result
     
     elif approval.action_type == ApprovalActionType.GOAL_CREATE.value:
         return {"message": "Goal creation would be executed here"}
@@ -216,8 +256,8 @@ def execute_approved_action(db: Session, approval: PendingApproval) -> Dict[str,
     elif approval.action_type == ApprovalActionType.AUTO_RULE_UPDATE.value:
         return {"message": "Auto rule update would be executed here"}
     
-    else:
-        return {"message": f"Unknown action type: {approval.action_type}"}
+    # Default case - unknown action type
+    raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
 
 # Approval settings functions
 def get_approval_settings(db: Session, couple_id: str) -> ApprovalSettings:

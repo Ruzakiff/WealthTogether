@@ -217,4 +217,100 @@ def calculate_monthly_surplus(db: Session, couple_id: str, year: int, month: int
         "income": income,
         "expenses": expenses,
         "surplus": surplus
-    } 
+    }
+
+def get_spending_insights(db: Session, couple_id: str, 
+                         start_date: datetime, end_date: datetime,
+                         threshold_percent: int = 50) -> List[Dict[str, Any]]:
+    """
+    Analyze spending patterns to generate insights
+    
+    Args:
+        db: Database session
+        couple_id: Couple ID to analyze
+        start_date: Start of analysis period
+        end_date: End of analysis period
+        threshold_percent: Threshold % change to flag as significant
+        
+    Returns:
+        List of insight dictionaries with message, category, and percent change
+    """
+    # Verify couple exists
+    couple = db.query(Couple).filter(Couple.id == couple_id).first()
+    if not couple:
+        raise HTTPException(status_code=404, detail=f"Couple with id {couple_id} not found")
+    
+    # Find the midpoint to compare two equal time periods
+    time_span = end_date - start_date
+    midpoint = start_date + (time_span / 2)
+    
+    # Get all withdrawal events in the period
+    events = db.query(LedgerEvent).filter(
+        ((LedgerEvent.user_id == couple.partner_1_id) |
+         (LedgerEvent.user_id == couple.partner_2_id)) &
+        (LedgerEvent.event_type == LedgerEventType.WITHDRAWAL) &
+        (LedgerEvent.timestamp >= start_date) &
+        (LedgerEvent.timestamp <= end_date)
+    ).all()
+    
+    # Group by category and by period (before/after midpoint)
+    first_period = {}
+    second_period = {}
+    
+    for event in events:
+        # Skip events without metadata or category info
+        if not event.event_metadata:
+            continue
+            
+        # Get category from metadata
+        category = None
+        if "category_id" in event.event_metadata and "category_name" in event.event_metadata:
+            category = event.event_metadata["category_name"]
+        elif "category" in event.event_metadata:
+            category = event.event_metadata["category"]
+            
+        if not category:
+            continue
+        
+        # Add to appropriate period
+        if event.timestamp < midpoint:
+            if category in first_period:
+                first_period[category] += event.amount
+            else:
+                first_period[category] = event.amount
+        else:
+            if category in second_period:
+                second_period[category] += event.amount
+            else:
+                second_period[category] = event.amount
+    
+    # Generate insights by comparing the two periods
+    insights = []
+    
+    for category, period2_amount in second_period.items():
+        period1_amount = first_period.get(category, 0)
+        
+        # Skip if no data from first period or zero amount
+        if period1_amount == 0:
+            continue
+            
+        # Calculate percent change
+        percent_change = ((period2_amount - period1_amount) / period1_amount) * 100
+        
+        # Generate insight if change exceeds threshold
+        if abs(percent_change) >= threshold_percent:
+            direction = "increase" if percent_change > 0 else "decrease"
+            message = f"Your {category} spending had a significant {direction} of {abs(int(percent_change))}%"
+            
+            insights.append({
+                "category": category,
+                "message": message,
+                "percent_change": percent_change,
+                "period1_amount": period1_amount,
+                "period2_amount": period2_amount
+            })
+    
+    # Sort insights by absolute percent change (largest first)
+    insights.sort(key=lambda x: abs(x["percent_change"]), reverse=True)
+    
+    return insights 

@@ -50,4 +50,20 @@ def get_couples_by_user_id(db: Session, user_id: str):
     couples = db.query(Couple).filter(
         (Couple.partner_1_id == user_id) | (Couple.partner_2_id == user_id)
     ).all()
-    return couples 
+    return couples
+
+def is_user_in_couple(db: Session, user_id: str, couple_id: str) -> bool:
+    """Check if a user is part of a specific couple."""
+    couple = get_couple_by_id(db, couple_id)
+    return couple.partner_1_id == user_id or couple.partner_2_id == user_id
+
+def get_couple_partner(db: Session, user_id: str, couple_id: str) -> str:
+    """Get the partner's user_id for a user in a couple."""
+    couple = get_couple_by_id(db, couple_id)
+    
+    if couple.partner_1_id == user_id:
+        return couple.partner_2_id
+    elif couple.partner_2_id == user_id:
+        return couple.partner_1_id
+    else:
+        raise HTTPException(status_code=400, detail="User is not part of this couple") 

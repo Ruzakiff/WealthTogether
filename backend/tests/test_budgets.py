@@ -1,10 +1,15 @@
 import pytest
-from fastapi import status
+from fastapi import status, HTTPException
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
+from unittest.mock import patch, MagicMock
 from uuid import uuid4
+import json
 
-from backend.app.models.models import User, Couple, Category, Budget, Transaction, LedgerEvent, LedgerEventType
+from backend.app.models.models import (
+    User, Couple, Category, Budget, Transaction, LedgerEvent, 
+    LedgerEventType, ApprovalSettings, ApprovalStatus, ApprovalActionType, PendingApproval
+)
 from backend.app.schemas.budgets import BudgetCreate, BudgetUpdate
 from backend.app.services.budget_service import (
     create_budget, 
@@ -16,9 +21,27 @@ from backend.app.services.budget_service import (
 )
 
 
+# Helper function to handle date serialization
+def date_serializer(obj):
+    """JSON serializer for objects not serializable by default json code"""
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
+
+# Create a patched JSON dumps function that uses our custom serializer
+def serialize_json(obj, *args, **kwargs):
+    """Serialize an object to JSON with custom date handling"""
+    return json.dumps(obj, default=date_serializer, *args, **kwargs)
+
+
 # Service layer tests
-def test_create_budget(db_session: Session, test_couple, test_user, test_category):
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_create_budget(mock_check_approval, db_session: Session, test_couple, test_user, test_category):
     """Test creating a budget"""
+    # Configure mock to bypass approval check
+    mock_check_approval.return_value = False
+    
     budget_data = BudgetCreate(
         couple_id=test_couple.id,
         category_id=test_category.id,
@@ -46,42 +69,88 @@ def test_create_budget(db_session: Session, test_couple, test_user, test_categor
     assert event.event_metadata.get("budget_id") == str(budget.id)
 
 
-def test_get_budgets(db_session: Session, test_couple, test_category, test_user):
-    """Test retrieving all budgets for a couple"""
-    # Create multiple budgets
-    create_budget(db_session, BudgetCreate(
+@patch('backend.app.services.budget_service.check_approval_required')
+@patch('backend.app.services.budget_service.create_pending_approval')
+def test_create_budget_with_approval(mock_create_approval, mock_check_approval, db_session: Session, test_couple, test_user, test_category):
+    """Test creating a budget that requires approval"""
+    # Configure mock to require approval
+    mock_check_approval.return_value = True
+    
+    # Mock the approval creation response
+    mock_approval = MagicMock()
+    mock_approval.id = str(uuid4())
+    mock_create_approval.return_value = mock_approval
+    
+    budget_data = BudgetCreate(
         couple_id=test_couple.id,
         category_id=test_category.id,
-        amount=300.00,
+        amount=1500.00,  # High amount to trigger approval
         period="monthly",
         start_date=date.today(),
         created_by=test_user.id
-    ))
+    )
     
-    # Create another category and budget
-    category2 = Category(name="Entertainment")
-    db_session.add(category2)
-    db_session.commit()
+    result = create_budget(db_session, budget_data)
     
-    create_budget(db_session, BudgetCreate(
-        couple_id=test_couple.id,
-        category_id=category2.id,
-        amount=200.00,
-        period="monthly",
-        start_date=date.today(),
-        created_by=test_user.id
-    ))
+    # Should return a dict with approval info
+    assert isinstance(result, dict)
+    assert result["status"] == "pending_approval"
+    assert result["message"] == "Budget creation requires partner approval"
+    assert "approval_id" in result
     
-    # Retrieve budgets
-    budgets = get_budgets(db_session, test_couple.id)
+    # Verify the create_pending_approval was called
+    mock_create_approval.assert_called_once()
     
-    assert len(budgets) == 2
-    assert budgets[0].couple_id == test_couple.id
-    assert budgets[1].couple_id == test_couple.id
+    # Verify no budget was created
+    budget_count = db_session.query(Budget).filter(
+        Budget.couple_id == test_couple.id,
+        Budget.category_id == test_category.id
+    ).count()
+    assert budget_count == 0
 
 
-def test_update_budget(db_session: Session, test_budget, test_user):
+def test_get_budgets(db_session: Session, test_couple, test_category, test_user):
+    """Test retrieving all budgets for a couple"""
+    # Patch to bypass approval check
+    with patch('backend.app.services.budget_service.check_approval_required', return_value=False):
+        # Create multiple budgets
+        create_budget(db_session, BudgetCreate(
+            couple_id=test_couple.id,
+            category_id=test_category.id,
+            amount=300.00,
+            period="monthly",
+            start_date=date.today(),
+            created_by=test_user.id
+        ))
+        
+        # Create another category and budget
+        category2 = Category(name="Entertainment")
+        db_session.add(category2)
+        db_session.commit()
+        
+        create_budget(db_session, BudgetCreate(
+            couple_id=test_couple.id,
+            category_id=category2.id,
+            amount=200.00,
+            period="monthly",
+            start_date=date.today(),
+            created_by=test_user.id
+        ))
+        
+        # Retrieve budgets
+        budgets = get_budgets(db_session, test_couple.id)
+        
+        assert len(budgets) == 2
+        assert budgets[0].couple_id == test_couple.id
+        assert budgets[1].couple_id == test_couple.id
+
+
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_update_budget(mock_check_approval, db_session: Session, test_budget, test_user):
     """Test updating a budget"""
+    # Configure mock to bypass approval check
+    mock_check_approval.return_value = False
+    
     update_data = BudgetUpdate(
         amount=600.00,
         period="weekly",
@@ -104,7 +173,34 @@ def test_update_budget(db_session: Session, test_budget, test_user):
     assert event.event_metadata.get("budget_id") == str(test_budget.id)
 
 
-def test_delete_budget(db_session: Session, test_budget, test_user):
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_update_budget_with_approval(mock_check_approval, db_session: Session, test_budget, test_user):
+    """Test updating a budget that requires approval"""
+    # Configure mock to require approval
+    mock_check_approval.return_value = True
+    
+    update_data = BudgetUpdate(
+        amount=1000.00,  # Big change that would trigger approval
+        period="weekly",
+        previous_amount=test_budget.amount,
+        updated_by=test_user.id
+    )
+    
+    result = update_budget(db_session, test_budget.id, update_data)
+    
+    # Should return a dict with approval info
+    assert isinstance(result, dict)
+    assert result["status"] == "pending_approval"
+    assert result["message"] == "Budget update requires partner approval"
+    assert "approval_id" in result
+
+    # Verify budget was not updated
+    db_session.refresh(test_budget)
+    assert test_budget.amount != 1000.00  # Should still have original value
+
+
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_delete_budget(mock_check_approval, db_session: Session, test_budget, test_user):
     """Test deleting a budget"""
     result = delete_budget(db_session, test_budget.id, test_user.id)
     
@@ -124,7 +220,8 @@ def test_delete_budget(db_session: Session, test_budget, test_user):
     assert event.event_metadata.get("budget_id") == str(test_budget.id)
 
 
-def test_budget_spending(db_session: Session, test_budget, test_category):
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_budget_spending(mock_check_approval, db_session: Session, test_budget, test_category):
     """Test budget spending analysis"""
     # Create transactions
     today = datetime.now().date()
@@ -238,8 +335,12 @@ def test_all_budgets_spending(db_session: Session, test_couple, test_user):
 
 
 # API layer tests
-def test_create_budget_endpoint(client, test_couple, test_category, test_user):
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_create_budget_endpoint(mock_check_approval, client, test_couple, test_category, test_user):
     """Test POST /budgets endpoint"""
+    # Configure mock to bypass approval check
+    mock_check_approval.return_value = False
+    
     response = client.post(
         "/api/v1/budgets/",
         json={
@@ -258,8 +359,39 @@ def test_create_budget_endpoint(client, test_couple, test_category, test_user):
     assert data["amount"] == 500.00
 
 
-def test_get_budgets_endpoint(client, test_couple, test_category, test_user, db_session):
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_create_budget_requiring_approval_endpoint(mock_check_approval, client, test_couple, test_user, test_category):
+    """Test POST /budgets/ endpoint when approval is required"""
+    # Configure mock to require approval
+    mock_check_approval.return_value = True
+    
+    # Use today's date as a string to avoid serialization issues
+    today_str = date.today().isoformat()
+    
+    response = client.post(
+        "/api/v1/budgets/",
+        json={
+            "couple_id": str(test_couple.id),
+            "category_id": str(test_category.id),
+            "amount": 1500.00,  # High amount that would trigger approval
+            "period": "monthly",
+            "start_date": today_str,
+            "created_by": str(test_user.id)
+        }
+    )
+    
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert data["status"] == "pending_approval"
+    assert "approval_id" in data
+
+
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_get_budgets_endpoint(mock_check_approval, client, test_couple, test_category, test_user, db_session):
     """Test GET /budgets endpoint"""
+    # Configure mock to bypass approval check
+    mock_check_approval.return_value = False
+    
     # Create a budget first
     create_budget(db_session, BudgetCreate(
         couple_id=test_couple.id,
@@ -280,7 +412,8 @@ def test_get_budgets_endpoint(client, test_couple, test_category, test_user, db_
     assert data[0]["amount"] == 300.00
 
 
-def test_budget_analysis_endpoint(client, test_budget, test_category, db_session):
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_budget_analysis_endpoint(mock_check_approval, client, test_budget, test_category, db_session):
     """Test GET /budgets/{budget_id}/analysis endpoint"""
     # Create a transaction
     today = datetime.now().date()
@@ -307,8 +440,12 @@ def test_budget_analysis_endpoint(client, test_budget, test_category, db_session
     assert data["remaining"] == test_budget.amount - 100.0
 
 
-def test_all_budgets_analysis_endpoint(client, test_couple, test_category, test_user, db_session):
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_all_budgets_analysis_endpoint(mock_check_approval, client, test_couple, test_category, test_user, db_session):
     """Test GET /budgets/analysis endpoint"""
+    # Configure mock to bypass approval check
+    mock_check_approval.return_value = False
+    
     # Create a budget
     create_budget(db_session, BudgetCreate(
         couple_id=test_couple.id,
@@ -344,8 +481,12 @@ def test_all_budgets_analysis_endpoint(client, test_couple, test_category, test_
     assert data[0]["percent_used"] == (75.0 / 300.0) * 100
 
 
-def test_update_budget_endpoint(client, test_budget, test_user):
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_update_budget_endpoint(mock_check_approval, client, test_budget, test_user):
     """Test PUT /budgets/{budget_id} endpoint"""
+    # Configure mock to bypass approval check
+    mock_check_approval.return_value = False
+    
     response = client.put(
         f"/api/v1/budgets/{test_budget.id}",
         json={
@@ -362,7 +503,30 @@ def test_update_budget_endpoint(client, test_budget, test_user):
     assert data["period"] == "biweekly"
 
 
-def test_delete_budget_endpoint(client, test_budget, test_user):
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_update_budget_requiring_approval_endpoint(mock_check_approval, client, test_budget, test_user):
+    """Test PUT /budgets/{budget_id} endpoint when approval is required"""
+    # Configure mock to require approval
+    mock_check_approval.return_value = True
+    
+    response = client.put(
+        f"/api/v1/budgets/{test_budget.id}",
+        json={
+            "amount": 1500.00,  # Big increase that would trigger approval
+            "period": "biweekly",
+            "updated_by": str(test_user.id),
+            "previous_amount": 500.00
+        }
+    )
+    
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert data["status"] == "pending_approval"
+    assert "approval_id" in data
+
+
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_delete_budget_endpoint(mock_check_approval, client, test_budget, test_user):
     """Test DELETE /budgets/{budget_id} endpoint"""
     response = client.delete(
         f"/api/v1/budgets/{test_budget.id}?user_id={test_user.id}"
@@ -390,7 +554,8 @@ def test_create_budget_invalid_category(client, test_couple, test_user):
     assert "Category not found" in response.json()["detail"]
 
 
-def test_budget_with_zero_spending(client, test_budget, db_session):
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_budget_with_zero_spending(mock_check_approval, client, test_budget, db_session):
     """Test budget analysis with no spending"""
     now = datetime.now()
     response = client.get(
@@ -404,7 +569,8 @@ def test_budget_with_zero_spending(client, test_budget, db_session):
     assert data["percent_used"] == 0.0
 
 
-def test_budget_with_non_current_month(client, test_budget, test_category, db_session):
+@patch('backend.app.services.budget_service.check_approval_required')
+def test_budget_with_non_current_month(mock_check_approval, client, test_budget, test_category, db_session):
     """Test budget analysis for past month"""
     # Create a transaction for last month
     last_month = datetime.now().replace(day=1) - timedelta(days=1)
@@ -445,13 +611,35 @@ def test_category(db_session):
 @pytest.fixture
 def test_budget(db_session, test_couple, test_category, test_user):
     """Create a test budget."""
-    budget_data = BudgetCreate(
+    with patch('backend.app.services.budget_service.check_approval_required', return_value=False):
+        budget_data = BudgetCreate(
+            couple_id=test_couple.id,
+            category_id=test_category.id,
+            amount=500.00,
+            period="monthly",
+            start_date=date.today(),
+            created_by=test_user.id
+        )
+        budget = create_budget(db_session, budget_data)
+        return budget
+
+
+@pytest.fixture
+def test_approval_settings(db_session, test_couple):
+    """Create test approval settings with high thresholds to bypass approvals."""
+    settings = ApprovalSettings(
         couple_id=test_couple.id,
-        category_id=test_category.id,
-        amount=500.00,
-        period="monthly",
-        start_date=date.today(),
-        created_by=test_user.id
+        enabled=True,
+        budget_creation_threshold=5000.0,  # Set high to bypass normal approvals
+        budget_update_threshold=2000.0,
+        goal_allocation_threshold=5000.0,
+        goal_reallocation_threshold=3000.0,
+        auto_rule_threshold=3000.0,
+        approval_expiration_hours=72,
+        notify_on_create=True,
+        notify_on_resolve=True
     )
-    budget = create_budget(db_session, budget_data)
-    return budget 
+    db_session.add(settings)
+    db_session.commit()
+    db_session.refresh(settings)
+    return settings 

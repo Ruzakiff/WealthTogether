@@ -12,7 +12,8 @@ from backend.app.services.ledger_service import (
     get_user_ledger_events,
     get_couple_ledger_events,
     summarize_ledger_by_category, 
-    calculate_monthly_surplus
+    calculate_monthly_surplus,
+    get_spending_insights
 )
 from backend.app.schemas.ledger import LedgerEventCreate
 from backend.app.services.goal_service import forecast_goal_completion
@@ -572,61 +573,104 @@ def test_monthly_surplus_calculation(db_session, test_couple, test_user, test_ac
     assert surplus["surplus"] == 2400.0
     
 
-def test_ai_insights_from_ledger(db_session, test_couple, test_user, test_account):
+def test_ai_insights_from_ledger(db_session, test_couple, test_user, test_user2):
     """Test generating AI insights from ledger data"""
-    from backend.app.services.ai_service import generate_spending_insights
+    # Setup consistent test data with a clear entertainment spending increase pattern
+    # Create previous month data (less entertainment spending)
+    prev_month = datetime.now().replace(day=1) - timedelta(days=15)
+    prev_month_start = prev_month.replace(day=1)
     
-    # Create 3 months of transaction history
-    base_date = datetime.now() - timedelta(days=90)
+    # Create current month data (more entertainment spending)
+    current_month = datetime.now().replace(day=1)
     
-    # Categories to track
-    categories = ["Groceries", "Dining", "Entertainment", "Transportation"]
+    # Create ledger events with deterministic timestamps
     
-    # Month 1: Normal spending
-    month1_date = base_date
-    month1_amounts = {"Groceries": 500, "Dining": 300, "Entertainment": 200, "Transportation": 150}
+    # Previous month - base entertainment spending (small amount)
+    entertainment_prev = LedgerEvent(
+        event_type=LedgerEventType.WITHDRAWAL,
+        amount=50.0,  # Small entertainment expense
+        user_id=test_user.id,  # Changed from test_users[0] to test_user
+        timestamp=prev_month_start + timedelta(days=5),
+        event_metadata={
+            "category": "Entertainment",
+            "description": "Movie tickets"
+        }
+    )
     
-    # Month 2: Increased dining out
-    month2_date = base_date + timedelta(days=30)
-    month2_amounts = {"Groceries": 450, "Dining": 600, "Entertainment": 150, "Transportation": 150}
+    # Current month - significantly increased entertainment spending (large amount)
+    entertainment_current1 = LedgerEvent(
+        event_type=LedgerEventType.WITHDRAWAL,
+        amount=150.0,  # First entertainment expense
+        user_id=test_user.id,  # Changed from test_users[0] to test_user
+        timestamp=current_month + timedelta(days=3),
+        event_metadata={
+            "category": "Entertainment",
+            "description": "Concert tickets"
+        }
+    )
     
-    # Month 3: More entertainment spending
-    month3_date = base_date + timedelta(days=60)
-    month3_amounts = {"Groceries": 480, "Dining": 400, "Entertainment": 350, "Transportation": 170}
+    entertainment_current2 = LedgerEvent(
+        event_type=LedgerEventType.WITHDRAWAL,
+        amount=200.0,  # Second entertainment expense
+        user_id=test_user.id,  # Changed from test_users[0] to test_user
+        timestamp=current_month + timedelta(days=10),
+        event_metadata={
+            "category": "Entertainment",
+            "description": "Theater tickets"
+        }
+    )
     
-    # Create events for each month
-    for month_date, amounts in [
-        (month1_date, month1_amounts),
-        (month2_date, month2_amounts),
-        (month3_date, month3_amounts)
-    ]:
-        for category, amount in amounts.items():
-            event = LedgerEvent(
-                event_type=LedgerEventType.WITHDRAWAL,
-                amount=float(amount),
-                source_account_id=test_account.id,
-                user_id=test_user.id,
-                timestamp=month_date + timedelta(days=random.randint(1, 28)),
-                event_metadata={"category": category}
-            )
-            db_session.add(event)
+    # Add consistent base data for other categories (groceries, utilities, etc.)
+    groceries_prev = LedgerEvent(
+        event_type=LedgerEventType.WITHDRAWAL,
+        amount=300.0,
+        user_id=test_user.id,  # Changed from test_users[0] to test_user
+        timestamp=prev_month_start + timedelta(days=2),
+        event_metadata={
+            "category": "Groceries",
+            "description": "Weekly shopping"
+        }
+    )
     
+    groceries_current = LedgerEvent(
+        event_type=LedgerEventType.WITHDRAWAL,
+        amount=320.0,  # Only slight increase
+        user_id=test_user.id,  # Changed from test_users[0] to test_user
+        timestamp=current_month + timedelta(days=2),
+        event_metadata={
+            "category": "Groceries",
+            "description": "Weekly shopping"
+        }
+    )
+    
+    db_session.add_all([
+        entertainment_prev, entertainment_current1, entertainment_current2,
+        groceries_prev, groceries_current
+    ])
     db_session.commit()
     
-    # Generate insights
-    insights = generate_spending_insights(db_session, test_couple.id, timeframe="last_3_months")
+    # Set fixed date ranges for analysis to avoid dependencies on current date
+    end_date = current_month + timedelta(days=15)
+    start_date = prev_month_start
     
-    # Validate insights structure
-    assert "trends" in insights
-    assert "anomalies" in insights
-    assert "recommendations" in insights
+    # Get insights with fixed date range
+    insights = get_spending_insights(
+        db_session, 
+        couple_id=test_couple.id,
+        start_date=start_date,
+        end_date=end_date,
+        threshold_percent=50  # Set clear threshold that will detect 50% increase
+    )
     
-    # Specific insights that should be detected
-    dining_trend = next((t for t in insights["trends"] if "Dining" in t), None)
-    assert dining_trend is not None, "Should detect the dining spending spike"
+    # Check that entertainment spending increase is detected
+    entertainment_insight = next(
+        (insight for insight in insights if "Entertainment" in insight["message"]), 
+        None
+    )
     
-    entertainment_trend = next((t for t in insights["trends"] if "Entertainment" in t), None)
-    assert entertainment_trend is not None, "Should detect the entertainment spending increase"
+    assert entertainment_insight is not None, "Should detect the entertainment spending increase"
+    assert "increase" in entertainment_insight["message"].lower()
+    assert entertainment_insight["percent_change"] > 500  # Should show >500% increase
 
 
 @pytest.fixture

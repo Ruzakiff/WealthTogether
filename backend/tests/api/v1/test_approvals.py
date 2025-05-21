@@ -87,6 +87,68 @@ class TestCreateApprovalEndpoint:
         assert data["id"] == mock_approval_response["id"]
         assert data["action_type"] == ApprovalActionType.BUDGET_CREATE.value
         mock_create.assert_called_once()
+    
+    @patch("backend.app.api.v1.approvals.create_pending_approval")
+    def test_create_approval_validation_error(self, mock_create, client):
+        """Test error when validation fails."""
+        # Setup
+        mock_create.side_effect = HTTPException(status_code=422, detail="Invalid payload format")
+        
+        # Execute
+        response = client.post(
+            "/api/v1/approvals/",
+            json={
+                "couple_id": "couple789",
+                "initiated_by": "user123",
+                "action_type": "budget_create",
+                "payload": "not_a_dict"  # Invalid payload format
+            }
+        )
+        
+        # Assert
+        assert response.status_code == 422
+    
+    @patch("backend.app.api.v1.approvals.create_pending_approval")
+    def test_create_approval_user_not_found(self, mock_create, client):
+        """Test error when user not found."""
+        # Setup
+        mock_create.side_effect = HTTPException(status_code=404, detail="User not found")
+        
+        # Execute
+        response = client.post(
+            "/api/v1/approvals/",
+            json={
+                "couple_id": "couple789",
+                "initiated_by": "nonexistent_user",
+                "action_type": "budget_create",
+                "payload": {"budget_name": "Groceries", "amount": 500}
+            }
+        )
+        
+        # Assert
+        assert response.status_code == 404
+        assert "User not found" in response.json()["detail"]
+    
+    @patch("backend.app.api.v1.approvals.create_pending_approval")
+    def test_create_approval_user_not_in_couple(self, mock_create, client):
+        """Test error when user not in couple."""
+        # Setup
+        mock_create.side_effect = HTTPException(status_code=403, detail="User is not part of this couple")
+        
+        # Execute
+        response = client.post(
+            "/api/v1/approvals/",
+            json={
+                "couple_id": "couple789",
+                "initiated_by": "unrelated_user",
+                "action_type": "budget_create",
+                "payload": {"budget_name": "Groceries", "amount": 500}
+            }
+        )
+        
+        # Assert
+        assert response.status_code == 403
+        assert "not part of this couple" in response.json()["detail"]
 
 class TestListApprovalsEndpoint:
     """Test list approvals endpoint."""
@@ -125,6 +187,21 @@ class TestListApprovalsEndpoint:
         assert data[0]["id"] == mock_approval_response["id"]
         # Use ANY matchers for the filters to avoid strict comparison
         mock_get.assert_called_once_with(ANY, ANY)
+    
+    @patch("backend.app.api.v1.approvals.get_pending_approvals")
+    def test_list_empty_approvals(self, mock_get, client):
+        """Test empty approval list."""
+        # Setup
+        mock_get.return_value = []
+        
+        # Execute
+        response = client.get("/api/v1/approvals/?couple_id=couple789")
+        
+        # Assert
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 0
+        assert isinstance(data, list)
 
 class TestGetApprovalEndpoint:
     """Test get approval endpoint."""
@@ -144,6 +221,19 @@ class TestGetApprovalEndpoint:
         assert data["id"] == mock_approval_response["id"]
         # Use ANY to match the db parameter
         mock_get.assert_called_once_with(ANY, mock_approval_response["id"])
+    
+    @patch("backend.app.api.v1.approvals.get_approval_by_id")
+    def test_get_nonexistent_approval(self, mock_get, client):
+        """Test error when approval doesn't exist."""
+        # Setup
+        mock_get.side_effect = HTTPException(status_code=404, detail="Approval not found")
+        
+        # Execute
+        response = client.get("/api/v1/approvals/nonexistent")
+        
+        # Assert
+        assert response.status_code == 404
+        assert "Approval not found" in response.json()["detail"]
 
 class TestResolveApprovalEndpoint:
     """Test resolve approval endpoint."""
@@ -214,6 +304,121 @@ class TestResolveApprovalEndpoint:
         assert data["status"] == "success"
         assert "execution_result" not in data
         mock_update.assert_called_once()
+    
+    @patch("backend.app.api.v1.approvals.update_approval_status")
+    def test_approval_expired(self, mock_update, client, mock_approval_response):
+        """Test error when approval is expired."""
+        # Setup
+        mock_update.side_effect = HTTPException(
+            status_code=400, 
+            detail="This approval has expired and can no longer be resolved"
+        )
+        
+        # Execute
+        response = client.put(
+            f"/api/v1/approvals/{mock_approval_response['id']}",
+            json={
+                "status": "approved",
+                "resolved_by": "partner456",
+                "resolution_note": "Looks good!"
+            }
+        )
+        
+        # Assert
+        assert response.status_code == 400
+        assert "expired" in response.json()["detail"].lower()
+    
+    @patch("backend.app.api.v1.approvals.update_approval_status")
+    def test_already_resolved(self, mock_update, client, mock_approval_response):
+        """Test error when approval is already resolved."""
+        # Setup
+        mock_update.side_effect = HTTPException(
+            status_code=400, 
+            detail="This approval has already been resolved"
+        )
+        
+        # Execute
+        response = client.put(
+            f"/api/v1/approvals/{mock_approval_response['id']}",
+            json={
+                "status": "approved",
+                "resolved_by": "partner456",
+                "resolution_note": "Looks good!"
+            }
+        )
+        
+        # Assert
+        assert response.status_code == 400
+        assert "already been resolved" in response.json()["detail"].lower()
+    
+    @patch("backend.app.api.v1.approvals.update_approval_status")
+    def test_unauthorized_resolver(self, mock_update, client, mock_approval_response):
+        """Test error when resolver is not authorized."""
+        # Setup
+        mock_update.side_effect = HTTPException(
+            status_code=403, 
+            detail="Only partners in this couple can approve or reject requests"
+        )
+        
+        # Execute
+        response = client.put(
+            f"/api/v1/approvals/{mock_approval_response['id']}",
+            json={
+                "status": "approved",
+                "resolved_by": "unauthorized_user",
+                "resolution_note": "Looks good!"
+            }
+        )
+        
+        # Assert
+        assert response.status_code == 403
+        assert "only partners" in response.json()["detail"].lower()
+    
+    @patch("backend.app.api.v1.approvals.update_approval_status")
+    def test_self_approval(self, mock_update, client, mock_approval_response):
+        """Test error when initiator tries to approve their own request."""
+        # Setup
+        mock_update.side_effect = HTTPException(
+            status_code=403, 
+            detail="You cannot approve your own request"
+        )
+        
+        # Execute
+        response = client.put(
+            f"/api/v1/approvals/{mock_approval_response['id']}",
+            json={
+                "status": "approved",
+                "resolved_by": mock_approval_response["initiated_by"],  # Same as initiator
+                "resolution_note": "Looks good!"
+            }
+        )
+        
+        # Assert
+        assert response.status_code == 403
+        assert "cannot approve your own request" in response.json()["detail"].lower()
+
+    @patch("backend.app.api.v1.approvals.update_approval_status")
+    def test_action_execution_error(self, mock_update, client, mock_approval_response):
+        """Test handling of action execution errors."""
+        # Setup
+        mock_update.side_effect = HTTPException(
+            status_code=500, 
+            detail="Error executing approved action: Budget creation failed"
+        )
+        
+        # Execute
+        response = client.put(
+            f"/api/v1/approvals/{mock_approval_response['id']}",
+            json={
+                "status": "approved",
+                "resolved_by": "partner456",
+                "resolution_note": "Looks good!"
+            }
+        )
+        
+        # Assert
+        assert response.status_code == 500
+        assert "executing approved action" in response.json()["detail"].lower()
 
 class TestApprovalSettingsEndpoints:
     """Test approval settings endpoints."""
@@ -234,6 +439,19 @@ class TestApprovalSettingsEndpoints:
         assert data["couple_id"] == mock_settings_response["couple_id"]
         # Use ANY to match the db parameter
         mock_get.assert_called_once_with(ANY, mock_settings_response["couple_id"])
+    
+    @patch("backend.app.api.v1.approvals.get_approval_settings")
+    def test_get_settings_not_found(self, mock_get, client):
+        """Test error when settings not found."""
+        # Setup
+        mock_get.side_effect = HTTPException(status_code=404, detail="Approval settings not found")
+        
+        # Execute
+        response = client.get("/api/v1/approvals/settings/nonexistent_couple")
+        
+        # Assert
+        assert response.status_code == 404
+        assert "settings not found" in response.json()["detail"].lower()
     
     @patch("backend.app.api.v1.approvals.update_approval_settings")
     def test_update_settings(self, mock_update, client, mock_settings_response):
@@ -268,4 +486,49 @@ class TestApprovalSettingsEndpoints:
         assert data["enabled"] == False
         assert data["budget_creation_threshold"] == 1000.0
         assert data["approval_expiration_hours"] == 48
-        mock_update.assert_called_once() 
+        mock_update.assert_called_once()
+    
+    @patch("backend.app.api.v1.approvals.update_approval_settings")
+    def test_update_settings_not_found(self, mock_update, client):
+        """Test error when settings not found during update."""
+        # Setup
+        mock_update.side_effect = HTTPException(status_code=404, detail="Approval settings not found")
+        
+        # Execute
+        response = client.put(
+            "/api/v1/approvals/settings/nonexistent_couple",
+            json={
+                "enabled": False,
+                "budget_creation_threshold": 1000.0,
+                "budget_update_threshold": 200.0,
+                "goal_allocation_threshold": 500.0,
+                "goal_reallocation_threshold": 300.0,
+                "auto_rule_threshold": 300.0,
+                "approval_expiration_hours": 48,
+                "notify_on_create": True,
+                "notify_on_resolve": True
+            }
+        )
+        
+        # Assert
+        assert response.status_code == 404
+        assert "settings not found" in response.json()["detail"].lower()
+    
+    @patch("backend.app.api.v1.approvals.update_approval_settings")
+    def test_update_settings_validation_error(self, mock_update, client):
+        """Test validation error in settings update."""
+        # Setup
+        mock_update.side_effect = HTTPException(status_code=422, detail="Invalid settings values")
+        
+        # Execute
+        response = client.put(
+            "/api/v1/approvals/settings/couple789",
+            json={
+                "enabled": False,
+                "budget_creation_threshold": -1000.0,  # Invalid negative value
+                "approval_expiration_hours": 0  # Invalid zero value
+            }
+        )
+        
+        # Assert
+        assert response.status_code == 422
