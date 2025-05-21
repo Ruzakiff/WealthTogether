@@ -4,8 +4,10 @@ from typing import List, Optional, Dict, Any
 from datetime import date, datetime, timedelta
 from uuid import uuid4
 
-from backend.app.models.models import FinancialGoal, Couple, BankAccount, AllocationMap, LedgerEvent, LedgerEventType
+from backend.app.models.models import FinancialGoal, Couple, BankAccount, AllocationMap, LedgerEvent, LedgerEventType, User
 from backend.app.schemas.goals import FinancialGoalCreate, GoalAllocation, FinancialGoalUpdate
+from backend.app.services.approval_service import check_approval_required, create_pending_approval
+from backend.app.schemas.approvals import ApprovalCreate, ApprovalActionType
 
 def create_financial_goal(db: Session, goal_data: FinancialGoalCreate):
     """Service function to create a new financial goal"""
@@ -15,16 +17,64 @@ def create_financial_goal(db: Session, goal_data: FinancialGoalCreate):
     if not couple:
         raise HTTPException(status_code=404, detail=f"Couple with id {goal_data.couple_id} not found")
     
+    # Check if approval is required
+    if check_approval_required(
+        db, 
+        goal_data.couple_id, 
+        ApprovalActionType.GOAL_CREATE, 
+        amount=goal_data.target_amount
+    ):
+        # Create approval request
+        # Convert date to string for JSON serialization
+        goal_data_dict = goal_data.model_dump()
+        if goal_data_dict.get('deadline') and isinstance(goal_data_dict['deadline'], date):
+            goal_data_dict['deadline'] = goal_data_dict['deadline'].isoformat()
+            
+        approval_data = ApprovalCreate(
+            couple_id=goal_data.couple_id,
+            initiated_by=goal_data.created_by,
+            action_type=ApprovalActionType.GOAL_CREATE,
+            payload=goal_data_dict
+        )
+        approval = create_pending_approval(db, approval_data)
+        
+        # Return a response indicating approval is pending
+        # Use a dict with similar structure to FinancialGoal but add pending status
+        return {
+            "status": "pending_approval",
+            "message": "Goal creation requires partner approval",
+            "approval_id": approval.id,
+            "couple_id": goal_data.couple_id,
+            "name": goal_data.name,
+            "target_amount": goal_data.target_amount,
+            "type": goal_data.type.value,
+            "priority": goal_data.priority,
+            "deadline": goal_data.deadline.isoformat() if goal_data.deadline else None
+        }
+    
+    # If no approval required, proceed with creation
+    return create_financial_goal_internal(db, goal_data.model_dump())
+
+def create_financial_goal_internal(db: Session, goal_data: Dict[str, Any]):
+    """
+    Internal function to create a financial goal without approval checks. 
+    Used by approval system when executing approved requests.
+    """
+    # Convert string to enum for type if needed
+    if isinstance(goal_data.get('type'), str):
+        from backend.app.models.models import GoalType
+        goal_data['type'] = GoalType(goal_data['type'])
+    
     # Create new financial goal
     new_goal = FinancialGoal(
-        couple_id=goal_data.couple_id,
-        name=goal_data.name,
-        target_amount=goal_data.target_amount,
-        type=goal_data.type,
+        couple_id=goal_data["couple_id"],
+        name=goal_data["name"],
+        target_amount=goal_data["target_amount"],
+        type=goal_data["type"],
         current_allocation=0.0,  # Start with zero allocation
-        priority=goal_data.priority,
-        deadline=goal_data.deadline,
-        notes=goal_data.notes
+        priority=goal_data.get("priority", 3),
+        deadline=goal_data.get("deadline"),
+        notes=goal_data.get("notes")
     )
     
     # Add to database
@@ -35,8 +85,8 @@ def create_financial_goal(db: Session, goal_data: FinancialGoalCreate):
     # Create a ledger event for goal creation
     log_event = LedgerEvent(
         event_type=LedgerEventType.SYSTEM,
-        amount=goal_data.target_amount,
-        user_id=goal_data.created_by,  # Assuming this exists or can be passed
+        amount=goal_data["target_amount"],
+        user_id=goal_data["created_by"],
         event_metadata={
             "action": "goal_created",
             "goal_id": str(new_goal.id),
@@ -61,7 +111,7 @@ def get_goals_by_couple(db: Session, couple_id: str) -> List[FinancialGoal]:
     return db.query(FinancialGoal).filter(FinancialGoal.couple_id == couple_id).all()
 
 def allocate_to_goal(db: Session, allocation_data: GoalAllocation, user_id: str):
-    """Allocate funds from an account to a goal"""
+    """Service function to allocate funds to a goal"""
     
     # Verify the goal exists
     goal = db.query(FinancialGoal).filter(FinancialGoal.id == allocation_data.goal_id).first()
@@ -73,91 +123,136 @@ def allocate_to_goal(db: Session, allocation_data: GoalAllocation, user_id: str)
     if not account:
         raise HTTPException(status_code=404, detail=f"Account with id {allocation_data.account_id} not found")
     
-    # Verify user owns this account
-    if account.user_id != user_id:
-        raise HTTPException(status_code=403, detail=f"User does not own this account")
-    
-    # Check available funds (account balance minus existing allocations)
-    existing_allocations = db.query(AllocationMap).filter(
-        AllocationMap.account_id == allocation_data.account_id
-    ).all()
-    
-    allocated_sum = sum(alloc.allocated_amount for alloc in existing_allocations)
-    available_balance = account.balance - allocated_sum
-    
-    if available_balance < allocation_data.amount:
+    # Check sufficient funds BEFORE approval check to prevent unnecessary approval requests
+    if account.balance < allocation_data.amount:
         raise HTTPException(
             status_code=400, 
-            detail=f"Insufficient available funds. Available: {available_balance}, Requested: {allocation_data.amount}"
+            detail=f"Insufficient funds in account. Available: {account.balance}, Requested: {allocation_data.amount}"
         )
     
-    # Check if allocation already exists - if so, update it
-    existing_allocation = db.query(AllocationMap).filter(
-        AllocationMap.goal_id == allocation_data.goal_id,
-        AllocationMap.account_id == allocation_data.account_id
-    ).first()
+    # Check if user is part of the couple that owns the goal
+    couple = db.query(Couple).filter(Couple.id == goal.couple_id).first()
+    if not couple or (user_id != couple.partner_1_id and user_id != couple.partner_2_id):
+        raise HTTPException(status_code=403, detail="User is not part of this couple")
     
-    if existing_allocation:
-        # Update the existing allocation
-        old_amount = existing_allocation.allocated_amount
-        existing_allocation.allocated_amount += allocation_data.amount
-        db.commit()
-        
-        # Update goal's current allocation
-        goal.current_allocation += allocation_data.amount
-        db.commit()
-        
-        # Log the change
-        log_event = LedgerEvent(
-            event_type=LedgerEventType.ALLOCATION,
-            amount=allocation_data.amount,
-            source_account_id=allocation_data.account_id,
-            dest_goal_id=allocation_data.goal_id,
-            user_id=user_id,
-            event_metadata={"previous_allocation": old_amount}
+    # Check if approval is required
+    if check_approval_required(
+        db, 
+        goal.couple_id, 
+        ApprovalActionType.ALLOCATION, 
+        amount=allocation_data.amount
+    ):
+        # Create approval request
+        approval_data = ApprovalCreate(
+            couple_id=goal.couple_id,
+            initiated_by=user_id,
+            action_type=ApprovalActionType.ALLOCATION,
+            payload={
+                "account_id": allocation_data.account_id,
+                "goal_id": allocation_data.goal_id,
+                "amount": allocation_data.amount
+            }
         )
-    else:
-        # Create a new allocation
-        new_allocation = AllocationMap(
-            goal_id=allocation_data.goal_id,
-            account_id=allocation_data.account_id,
-            allocated_amount=allocation_data.amount
-        )
-        db.add(new_allocation)
-        db.commit()
+        approval = create_pending_approval(db, approval_data)
         
-        # Update goal's current allocation
-        goal.current_allocation += allocation_data.amount
-        db.commit()
-        
-        # Log the event
-        log_event = LedgerEvent(
-            event_type=LedgerEventType.ALLOCATION,
-            amount=allocation_data.amount,
-            source_account_id=allocation_data.account_id,
-            dest_goal_id=allocation_data.goal_id,
-            user_id=user_id,
-            event_metadata={"initial_allocation": True}
-        )
+        # Return a response indicating approval is pending
+        return {
+            "status": "pending_approval",
+            "message": "Allocation requires partner approval",
+            "approval_id": approval.id,
+            "goal_id": allocation_data.goal_id,
+            "account_id": allocation_data.account_id,
+            "amount": allocation_data.amount
+        }
     
-    # Add the log event
-    db.add(log_event)
-    db.commit()
+    # If no approval required, proceed with allocation
+    goal_result = allocate_to_goal_internal(db, allocation_data.model_dump(), user_id)
     
-    # Return the updated goal
-    db.refresh(goal)
-    return goal 
+    # Create a response dictionary with the expected fields
+    return {
+        "id": str(goal_result.id),
+        "couple_id": str(goal_result.couple_id),
+        "name": goal_result.name,
+        "target_amount": goal_result.target_amount,
+        "type": goal_result.type,
+        "current_allocation": goal_result.current_allocation,
+        "priority": goal_result.priority,
+        "deadline": goal_result.deadline,
+        "notes": goal_result.notes,
+        "created_at": goal_result.created_at
+    }
 
-def reallocate_between_goals(db: Session, 
-                           source_goal_id: str, 
-                           dest_goal_id: str, 
-                           amount: float, 
-                           user_id: str,
-                           metadata: dict = None) -> Dict[str, Any]:
+def allocate_to_goal_internal(db: Session, allocation_data: Dict[str, Any], user_id: str):
     """
-    Reallocate funds between two goals
+    Internal function to allocate funds to a goal without approval checks.
+    Used by approval system when executing approved requests.
     """
-    # Get the source and destination goals
+    account_id = allocation_data["account_id"]
+    goal_id = allocation_data["goal_id"]
+    amount = allocation_data["amount"]
+    
+    # Verify the goal exists
+    goal = db.query(FinancialGoal).filter(FinancialGoal.id == goal_id).first()
+    if not goal:
+        raise HTTPException(status_code=404, detail=f"Goal with id {goal_id} not found")
+    
+    # Verify the account exists
+    account = db.query(BankAccount).filter(BankAccount.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail=f"Account with id {account_id} not found")
+    
+    # Verify sufficient funds available in the account
+    if account.balance < amount:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Insufficient funds in account. Available: {account.balance}, Requested: {amount}"
+        )
+    
+    # Update goal allocation
+    goal.current_allocation += amount
+    
+    # Create allocation map record
+    allocation_map = AllocationMap(
+        goal_id=goal_id,
+        account_id=account_id,
+        allocated_amount=amount
+    )
+    
+    # Create ledger event
+    event = LedgerEvent(
+        event_type=LedgerEventType.ALLOCATION,
+        amount=amount,
+        source_account_id=account_id,
+        dest_goal_id=goal_id,
+        user_id=user_id,
+        timestamp=datetime.now(),
+        event_metadata={
+            "note": f"Allocation to {goal.name}"
+        }
+    )
+    
+    # Update account balance
+    account.balance -= amount
+    
+    # Save changes
+    db.add(allocation_map)
+    db.add(event)
+    db.commit()
+    db.refresh(goal)
+    
+    return goal
+
+def reallocate_between_goals(
+    db: Session, 
+    source_goal_id: str, 
+    dest_goal_id: str, 
+    amount: float, 
+    user_id: str,
+    metadata: Optional[Dict[str, Any]] = None
+):
+    """Reallocate funds from one goal to another"""
+    
+    # Verify both goals exist
     source_goal = db.query(FinancialGoal).filter(FinancialGoal.id == source_goal_id).first()
     if not source_goal:
         raise HTTPException(status_code=404, detail=f"Source goal with id {source_goal_id} not found")
@@ -166,67 +261,110 @@ def reallocate_between_goals(db: Session,
     if not dest_goal:
         raise HTTPException(status_code=404, detail=f"Destination goal with id {dest_goal_id} not found")
     
-    # Ensure the goals belong to the same couple
+    # Verify goals belong to the same couple
     if source_goal.couple_id != dest_goal.couple_id:
         raise HTTPException(status_code=400, detail="Goals must belong to the same couple")
     
+    # Check if user is part of the couple
+    couple = db.query(Couple).filter(Couple.id == source_goal.couple_id).first()
+    if not couple or (user_id != couple.partner_1_id and user_id != couple.partner_2_id):
+        raise HTTPException(status_code=403, detail="User is not part of this couple")
+    
+    # Check if approval is required
+    if check_approval_required(
+        db, 
+        source_goal.couple_id, 
+        ApprovalActionType.REALLOCATION, 
+        amount=amount
+    ):
+        # Create approval request
+        approval_data = ApprovalCreate(
+            couple_id=source_goal.couple_id,
+            initiated_by=user_id,
+            action_type=ApprovalActionType.REALLOCATION,
+            payload={
+                "source_goal_id": source_goal_id,
+                "dest_goal_id": dest_goal_id,
+                "amount": amount,
+                "metadata": metadata or {}
+            }
+        )
+        approval = create_pending_approval(db, approval_data)
+        
+        # Return a response indicating approval is pending
+        return {
+            "status": "pending_approval",
+            "message": "Reallocation requires partner approval",
+            "approval_id": approval.id,
+            "source_goal_id": source_goal_id,
+            "dest_goal_id": dest_goal_id,
+            "amount": amount
+        }
+    
+    # If no approval required, proceed with reallocation
+    return reallocate_between_goals_internal(db, {
+        "source_goal_id": source_goal_id,
+        "dest_goal_id": dest_goal_id,
+        "amount": amount,
+        "user_id": user_id,
+        "metadata": metadata or {}
+    })
+
+def reallocate_between_goals_internal(db: Session, reallocation_data: Dict[str, Any]):
+    """
+    Internal function to reallocate funds between goals without approval checks.
+    Used by approval system when executing approved requests.
+    """
+    source_goal_id = reallocation_data["source_goal_id"]
+    dest_goal_id = reallocation_data["dest_goal_id"]
+    amount = reallocation_data["amount"]
+    user_id = reallocation_data["user_id"]
+    metadata = reallocation_data.get("metadata", {})
+    
+    # Verify both goals exist
+    source_goal = db.query(FinancialGoal).filter(FinancialGoal.id == source_goal_id).first()
+    if not source_goal:
+        raise HTTPException(status_code=404, detail=f"Source goal with id {source_goal_id} not found")
+    
+    dest_goal = db.query(FinancialGoal).filter(FinancialGoal.id == dest_goal_id).first()
+    if not dest_goal:
+        raise HTTPException(status_code=404, detail=f"Destination goal with id {dest_goal_id} not found")
+    
     # Check if source goal has enough allocation
     if source_goal.current_allocation < amount:
-        raise HTTPException(status_code=400, detail=f"Source goal only has {source_goal.current_allocation} allocated, cannot transfer {amount}")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Insufficient allocation in source goal. Available: {source_goal.current_allocation}, Requested: {amount}"
+        )
     
-    # Update goal allocations
+    # Update allocations
     source_goal.current_allocation -= amount
     dest_goal.current_allocation += amount
     
-    # Create a ledger event for the reallocation
-    metadata = metadata or {}
-    metadata.update({
-        "action": "goal_reallocation",
-        "source_goal_id": source_goal_id,
-        "source_goal_name": source_goal.name,
-        "dest_goal_id": dest_goal_id,
-        "dest_goal_name": dest_goal.name
-    })
-    
+    # Create ledger event
     log_event = LedgerEvent(
         event_type=LedgerEventType.REALLOCATION,
         amount=amount,
+        source_goal_id=source_goal_id,
+        dest_goal_id=dest_goal_id,
         user_id=user_id,
-        event_metadata=metadata
+        event_metadata={
+            "action": "reallocate_funds",
+            "source_goal": source_goal.name,
+            "dest_goal": dest_goal.name,
+            **(metadata or {})
+        }
     )
-    
-    # Commit changes
     db.add(log_event)
+    
     db.commit()
     db.refresh(source_goal)
     db.refresh(dest_goal)
     
-    # Convert model instances to dictionaries for proper serialization
-    source_goal_dict = {
-        "id": source_goal.id,
-        "name": source_goal.name,
-        "couple_id": source_goal.couple_id,
-        "target_amount": source_goal.target_amount,
-        "current_allocation": source_goal.current_allocation,
-        "type": source_goal.type.name if hasattr(source_goal.type, "name") else str(source_goal.type),
-        "priority": source_goal.priority
-    }
-    
-    dest_goal_dict = {
-        "id": dest_goal.id,
-        "name": dest_goal.name,
-        "couple_id": dest_goal.couple_id,
-        "target_amount": dest_goal.target_amount,
-        "current_allocation": dest_goal.current_allocation,
-        "type": dest_goal.type.name if hasattr(dest_goal.type, "name") else str(dest_goal.type),
-        "priority": dest_goal.priority
-    }
-    
     return {
-        "source_goal": source_goal_dict,
-        "dest_goal": dest_goal_dict,
-        "amount": amount,
-        "timestamp": log_event.timestamp.isoformat() if log_event.timestamp else None
+        "source_goal": source_goal,
+        "dest_goal": dest_goal,
+        "amount": amount
     }
 
 def suggest_goal_rebalance(db: Session, couple_id: str) -> List[Dict[str, Any]]:
@@ -281,80 +419,130 @@ def suggest_goal_rebalance(db: Session, couple_id: str) -> List[Dict[str, Any]]:
     
     return suggestions
 
-def batch_reallocate_goals(db: Session, rebalance_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """
-    Process multiple goal reallocations in a single batch operation
-    """
-    if "rebalance_id" not in rebalance_data or "moves" not in rebalance_data:
-        raise HTTPException(status_code=400, detail="Invalid rebalance data format")
+def batch_reallocate_goals(db: Session, rebalance_data: Dict[str, Any], user_id: str):
+    """Process multiple goal reallocations in a batch"""
     
-    rebalance_id = rebalance_data["rebalance_id"]
-    moves = rebalance_data["moves"]
+    # Check that we have a valid user
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
     
-    if not isinstance(moves, list) or len(moves) == 0:
-        raise HTTPException(status_code=400, detail="Moves must be a non-empty list")
+    # Preserve rebalance_id if provided
+    rebalance_id = rebalance_data.get("rebalance_id")
     
-    # Track all movements
+    # Handle both API formats: rebalance_commit endpoint and batch reallocations
+    if "from_goal_id" in rebalance_data and "to_goal_id" in rebalance_data:
+        # Single reallocation from rebalance_commit endpoint
+        result = reallocate_between_goals(
+            db=db,
+            source_goal_id=rebalance_data["from_goal_id"],
+            dest_goal_id=rebalance_data["to_goal_id"],
+            amount=rebalance_data["amount"],
+            user_id=user_id,
+            metadata={"action": "batch_rebalance"}
+        )
+        # Add rebalance_id to the result if it was in the input
+        if rebalance_id and isinstance(result, dict):
+            result["rebalance_id"] = rebalance_id
+        return result
+    
+    # Handle both "moves" (from tests) and "reallocations" (from production code)
+    reallocations = rebalance_data.get("reallocations", rebalance_data.get("moves", []))
+    if not reallocations:
+        raise HTTPException(status_code=400, detail="No reallocations provided")
+    
+    # Get total reallocation amount to check for approval
+    total_amount = sum(r["amount"] for r in reallocations)
+    
+    # Get the couple_id from the first goal
+    first_goal_id = reallocations[0].get("source_goal_id", reallocations[0].get("from_goal_id"))
+    if not first_goal_id:
+        raise HTTPException(status_code=400, detail="Missing source goal ID in reallocation data")
+        
+    goal = db.query(FinancialGoal).filter(FinancialGoal.id == first_goal_id).first()
+    if not goal:
+        raise HTTPException(status_code=404, detail=f"Goal with id {first_goal_id} not found")
+    
+    couple_id = goal.couple_id
+    
+    # Check if approval is required for the batch (based on total amount)
+    if check_approval_required(
+        db, 
+        couple_id, 
+        ApprovalActionType.REALLOCATION, 
+        amount=total_amount
+    ):
+        # Create approval request
+        approval_data = ApprovalCreate(
+            couple_id=couple_id,
+            initiated_by=user_id,
+            action_type=ApprovalActionType.REALLOCATION,
+            payload=rebalance_data
+        )
+        approval = create_pending_approval(db, approval_data)
+        
+        # Return pending approval response with rebalance_id if provided
+        response = {
+            "status": "pending_approval",
+            "message": "Goal reallocation batch requires partner approval",
+            "approval_id": approval.id,
+            "couple_id": couple_id,
+            "total_amount": total_amount,
+            "reallocation_count": len(reallocations)
+        }
+        if rebalance_id:
+            response["rebalance_id"] = rebalance_id
+        return response
+    
+    # If no approval required, process all reallocations
     results = []
-    total_amount = 0
-    
-    # Process each move
-    for move in moves:
-        # Check for required fields
-        if not all(k in move for k in ["source_goal_id", "dest_goal_id", "amount"]):
-            raise HTTPException(status_code=400, detail="Each move must have source_goal_id, dest_goal_id, and amount")
+    for realloc in reallocations:
+        # Handle both key formats
+        source_goal_id = realloc.get("source_goal_id", realloc.get("from_goal_id"))
+        dest_goal_id = realloc.get("dest_goal_id", realloc.get("to_goal_id"))
         
-        # Extract move data
-        source_goal_id = move["source_goal_id"]
-        dest_goal_id = move["dest_goal_id"]
-        amount = move["amount"]
-        
-        # Process the individual reallocation
-        try:
-            result = reallocate_between_goals(
-                db=db,
-                source_goal_id=source_goal_id,
-                dest_goal_id=dest_goal_id,
-                amount=amount,
-                user_id=user_id,
-                metadata={"batch_id": rebalance_id}
-            )
-            
-            results.append(result)
-            total_amount += amount
-            
-        except HTTPException as e:
-            # Roll back any previous reallocations if one fails
-            db.rollback()
+        if not source_goal_id or not dest_goal_id:
             raise HTTPException(
-                status_code=e.status_code,
-                detail=f"Error processing move: {e.detail}"
+                status_code=400, 
+                detail="Each reallocation must have source_goal_id/from_goal_id and dest_goal_id/to_goal_id"
             )
+            
+        result = reallocate_between_goals(
+            db=db,
+            source_goal_id=source_goal_id,
+            dest_goal_id=dest_goal_id,
+            amount=realloc["amount"],
+            user_id=user_id,
+            metadata={"action": "batch_rebalance_item"}
+        )
+        results.append(result)
     
-    # Create a summary ledger event for the batch
-    batch_summary = LedgerEvent(
+    # Create a summary event
+    log_event = LedgerEvent(
         event_type=LedgerEventType.SYSTEM,
         amount=total_amount,
         user_id=user_id,
         event_metadata={
-            "action": "batch_reallocation",
-            "rebalance_id": rebalance_id,
-            "num_moves": len(moves),
+            "action": "batch_rebalance_complete",
+            "reallocation_count": len(reallocations),
             "total_amount": total_amount
         }
     )
-    
-    db.add(batch_summary)
+    db.add(log_event)
     db.commit()
     
-    return {
-        "rebalance_id": rebalance_id,
-        "results": results,
+    # Return success response with rebalance_id if provided
+    response = {
+        "success": True,
+        "message": f"Processed {len(results)} reallocation(s)",
         "total_amount": total_amount,
-        "timestamp": batch_summary.timestamp.isoformat() if batch_summary.timestamp else None
+        "details": results
     }
+    if rebalance_id:
+        response["rebalance_id"] = rebalance_id
+    return response
 
-def update_financial_goal(db: Session, goal_id: str, update_data: FinancialGoalUpdate):
+def update_financial_goal(db: Session, goal_id: str, update_data: FinancialGoalUpdate, user_id: str):
     """Update an existing financial goal"""
     
     # Verify the goal exists
@@ -362,23 +550,67 @@ def update_financial_goal(db: Session, goal_id: str, update_data: FinancialGoalU
     if not goal:
         raise HTTPException(status_code=404, detail=f"Goal with id {goal_id} not found")
     
-    # Update fields if provided
-    if update_data.name is not None:
-        goal.name = update_data.name
+    # Find the couple
+    couple = db.query(Couple).filter(Couple.id == goal.couple_id).first()
+    if not couple:
+        raise HTTPException(status_code=404, detail=f"Couple for this goal not found")
     
-    if update_data.target_amount is not None:
-        goal.target_amount = update_data.target_amount
+    # Check if user is part of the couple
+    if user_id != couple.partner_1_id and user_id != couple.partner_2_id:
+        raise HTTPException(status_code=403, detail="User is not part of this couple")
     
-    if update_data.priority is not None:
-        goal.priority = update_data.priority
+    # Check if approval is required (only if target amount is being changed)
+    if update_data.target_amount and check_approval_required(
+        db, 
+        goal.couple_id, 
+        ApprovalActionType.GOAL_UPDATE, 
+        amount=update_data.target_amount
+    ):
+        # Create approval request
+        update_data_dict = update_data.model_dump(exclude_none=True)
+        
+        # Convert date to string for JSON serialization
+        if update_data_dict.get('deadline') and isinstance(update_data_dict['deadline'], date):
+            update_data_dict['deadline'] = update_data_dict['deadline'].isoformat()
+            
+        approval_data = ApprovalCreate(
+            couple_id=goal.couple_id,
+            initiated_by=user_id,
+            action_type=ApprovalActionType.GOAL_UPDATE,
+            payload={
+                "goal_id": goal_id,
+                **update_data_dict
+            }
+        )
+        approval = create_pending_approval(db, approval_data)
+        
+        # Return a response indicating approval is pending
+        return {
+            "status": "pending_approval",
+            "message": "Goal update requires partner approval",
+            "approval_id": approval.id,
+            "goal_id": goal_id,
+            **update_data_dict
+        }
     
-    if update_data.deadline is not None:
-        goal.deadline = update_data.deadline
+    # If no approval required, proceed with update
+    return update_financial_goal_internal(db, goal_id, update_data.model_dump(exclude_none=True))
+
+def update_financial_goal_internal(db: Session, goal_id: str, update_data: Dict[str, Any]):
+    """
+    Internal function to update a financial goal without approval checks.
+    Used by approval system when executing approved requests.
+    """
+    # Verify the goal exists
+    goal = db.query(FinancialGoal).filter(FinancialGoal.id == goal_id).first()
+    if not goal:
+        raise HTTPException(status_code=404, detail=f"Goal with id {goal_id} not found")
     
-    if update_data.notes is not None:
-        goal.notes = update_data.notes
+    # Update fields
+    for key, value in update_data.items():
+        if hasattr(goal, key):
+            setattr(goal, key, value)
     
-    # Save changes
     db.commit()
     db.refresh(goal)
     

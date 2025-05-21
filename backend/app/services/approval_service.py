@@ -239,16 +239,103 @@ def execute_approved_action(db: Session, approval: PendingApproval) -> Dict[str,
         return result
     
     elif approval.action_type == ApprovalActionType.GOAL_CREATE.value:
-        return {"message": "Goal creation would be executed here"}
+        from backend.app.services.goal_service import create_financial_goal_internal
+        result = create_financial_goal_internal(db, payload)
+        
+        # Convert the SQLAlchemy model to a dictionary for JSON serialization
+        if hasattr(result, "__dict__"):
+            # Handle SQLAlchemy models
+            result_dict = {
+                "id": str(result.id),
+                "couple_id": str(result.couple_id),
+                "name": result.name,
+                "target_amount": result.target_amount,
+                "type": str(result.type),
+                "current_allocation": result.current_allocation,
+                "priority": result.priority,
+                "deadline": result.deadline.isoformat() if result.deadline else None,
+                "created_at": result.created_at.isoformat() if hasattr(result.created_at, "isoformat") else str(result.created_at)
+            }
+            return result_dict
+        return result
     
     elif approval.action_type == ApprovalActionType.GOAL_UPDATE.value:
-        return {"message": "Goal update would be executed here"}
+        from backend.app.services.goal_service import update_financial_goal_internal
+        goal_id = payload.pop("goal_id", None)
+        if not goal_id:
+            raise HTTPException(status_code=400, detail="Missing goal_id in approval payload")
+        
+        result = update_financial_goal_internal(db, goal_id, payload)
+        
+        # Convert the SQLAlchemy model to a dictionary for JSON serialization
+        if hasattr(result, "__dict__"):
+            # Handle SQLAlchemy models
+            result_dict = {
+                "id": str(result.id),
+                "couple_id": str(result.couple_id),
+                "name": result.name,
+                "target_amount": result.target_amount,
+                "type": str(result.type),
+                "current_allocation": result.current_allocation,
+                "priority": result.priority,
+                "deadline": result.deadline.isoformat() if result.deadline else None,
+                "created_at": result.created_at.isoformat() if hasattr(result.created_at, "isoformat") else str(result.created_at)
+            }
+            return result_dict
+        return result
     
     elif approval.action_type == ApprovalActionType.ALLOCATION.value:
-        return {"message": "Allocation would be executed here"}
+        from backend.app.services.goal_service import allocate_to_goal_internal
+        
+        # Get the user_id from the approval initiator
+        user_id = approval.initiated_by
+        
+        result = allocate_to_goal_internal(db, payload, user_id)
+        
+        # Convert the SQLAlchemy model to a dictionary for JSON serialization
+        if hasattr(result, "__dict__"):
+            # Handle SQLAlchemy models
+            result_dict = {
+                "id": str(result.id),
+                "couple_id": str(result.couple_id),
+                "name": result.name,
+                "target_amount": result.target_amount,
+                "type": str(result.type),
+                "current_allocation": result.current_allocation,
+                "priority": result.priority,
+                "deadline": result.deadline.isoformat() if result.deadline else None,
+                "created_at": result.created_at.isoformat() if hasattr(result.created_at, "isoformat") else str(result.created_at)
+            }
+            return result_dict
+        return result
     
     elif approval.action_type == ApprovalActionType.REALLOCATION.value:
-        return {"message": "Reallocation would be executed here"}
+        from backend.app.services.goal_service import reallocate_between_goals_internal
+        
+        # Add the user_id from the approval initiator
+        payload["user_id"] = approval.initiated_by
+        
+        result = reallocate_between_goals_internal(db, payload)
+        
+        # Format the response with both goals
+        if "source_goal" in result and "dest_goal" in result:
+            source_goal = result["source_goal"]
+            dest_goal = result["dest_goal"]
+            
+            return {
+                "source_goal": {
+                    "id": str(source_goal.id),
+                    "name": source_goal.name,
+                    "current_allocation": source_goal.current_allocation,
+                },
+                "dest_goal": {
+                    "id": str(dest_goal.id),
+                    "name": dest_goal.name,
+                    "current_allocation": dest_goal.current_allocation,
+                },
+                "amount": result["amount"]
+            }
+        return result
     
     elif approval.action_type == ApprovalActionType.AUTO_RULE_CREATE.value:
         return {"message": "Auto rule creation would be executed here"}

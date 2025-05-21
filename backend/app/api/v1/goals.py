@@ -16,7 +16,7 @@ from backend.app.database import get_db_session
 
 router = APIRouter()
 
-@router.post("/", response_model=FinancialGoalResponse)
+@router.post("/", response_model=Dict[str, Any])
 async def create_goal(goal_data: FinancialGoalCreate, db: Session = Depends(get_db_session)):
     """
     Create a new financial goal.
@@ -24,6 +24,7 @@ async def create_goal(goal_data: FinancialGoalCreate, db: Session = Depends(get_
     - Associates goal with a couple
     - Sets target amount, priority, and deadline
     - Initial allocation is zero
+    - May require partner approval based on settings
     """
     return create_financial_goal(db, goal_data)
 
@@ -37,7 +38,7 @@ async def get_goals(
     """
     return get_goals_by_couple(db, couple_id)
 
-@router.post("/allocate", response_model=FinancialGoalResponse)
+@router.post("/allocate", response_model=Dict[str, Any])
 async def allocate_funds(
     allocation_data: GoalAllocation, 
     user_id: str = Query(..., description="ID of the user performing the allocation"),
@@ -49,6 +50,7 @@ async def allocate_funds(
     - Updates AllocationMap
     - Adjusts goal's current_allocation
     - Creates a LedgerEvent to track the action
+    - May require partner approval based on settings
     """
     return allocate_to_goal(db, allocation_data, user_id)
 
@@ -64,6 +66,7 @@ async def reallocate_funds(
     - Moves funds between goals
     - Updates both goals' current_allocation
     - Creates a LedgerEvent to track the reallocation
+    - May require partner approval based on settings
     """
     return reallocate_between_goals(
         db,
@@ -73,10 +76,11 @@ async def reallocate_funds(
         user_id
     )
 
-@router.put("/{goal_id}", response_model=FinancialGoalResponse)
+@router.put("/{goal_id}", response_model=Dict[str, Any])
 async def update_goal(
     goal_id: str, 
-    update_data: FinancialGoalUpdate, 
+    update_data: FinancialGoalUpdate,
+    user_id: str = Query(..., description="ID of the user performing the update"),
     db: Session = Depends(get_db_session)
 ):
     """
@@ -84,8 +88,9 @@ async def update_goal(
     
     - Can modify name, target amount, priority, deadline, or notes
     - Returns the updated goal object
+    - May require partner approval based on settings
     """
-    return update_financial_goal(db, goal_id, update_data)
+    return update_financial_goal(db, goal_id, update_data, user_id)
 
 @router.post("/{goal_id}/forecast")
 async def forecast_goal(
@@ -128,5 +133,18 @@ async def batch_rebalance(
     - Takes a list of moves (source goal, destination goal, amount)
     - Processes all moves in a batch
     - Creates a single summary ledger event
+    - May require partner approval based on settings
     """
+    # Validate amount
+    if "amount" in rebalance_data and rebalance_data["amount"] <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+        
+    # Ensure a user ID is present either in the URL or JSON body
+    if "user_id" not in rebalance_data and not user_id:
+        raise HTTPException(status_code=400, detail="User ID is required")
+        
+    # Use the user_id from the query parameter if not in the JSON
+    if "user_id" not in rebalance_data:
+        rebalance_data["user_id"] = user_id
+    
     return batch_reallocate_goals(db, rebalance_data, user_id) 
