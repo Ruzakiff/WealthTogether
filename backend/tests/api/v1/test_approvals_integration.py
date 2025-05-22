@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from backend.app.main import app
 from backend.app.database import get_db_session
-from backend.app.models.models import Base, User, Couple, PendingApproval, ApprovalSettings, ApprovalStatus, ApprovalActionType, Category, BankAccount, FinancialGoal, GoalType, AutoAllocationRule
+from backend.app.models.models import Base, User, Couple, PendingApproval, ApprovalSettings, ApprovalStatus, ApprovalActionType, Category, BankAccount, FinancialGoal, GoalType, AutoAllocationRule, Budget
 
 # Create an in-memory SQLite database for testing
 TEST_SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -684,6 +684,73 @@ class TestApprovalsWorkflow:
         db_session.refresh(dest_goal)
         assert source_goal.current_allocation == 500.0  # 1000 - 500
         assert dest_goal.current_allocation == 500.0    # 0 + 500
+
+    def test_budget_update_approval_workflow(self, client, setup_test_data, db_session):
+        """Test updating a budget through approval workflow."""
+        data = setup_test_data
+        
+        # Create a test category
+        category = Category(
+            id=str(uuid4()),
+            name="Test Category"
+        )
+        
+        # Create a test budget first
+        budget = Budget(
+            id=str(uuid4()),
+            couple_id=data["couple"].id,
+            category_id=category.id,
+            amount=500.0,
+            period="monthly",
+            start_date=date.today()
+        )
+        
+        db_session.add(category)
+        db_session.add(budget)
+        db_session.commit()
+        
+        # 1. Create an approval request for budget update
+        approval_data = {
+            "couple_id": str(data["couple"].id),
+            "initiated_by": str(data["user1"].id),
+            "action_type": "budget_update",
+            "payload": {
+                "budget_id": str(budget.id),
+                "amount": 1000.0,
+                "period": "biweekly",
+                "previous_amount": 500.0,
+                "updated_by": str(data["user1"].id)
+            }
+        }
+        
+        create_response = client.post("/api/v1/approvals/", json=approval_data)
+        assert create_response.status_code == 200
+        approval = create_response.json()
+        approval_id = approval["id"]
+        
+        # 2. Approve the request as the partner
+        approve_data = {
+            "status": "approved",
+            "resolved_by": str(data["user2"].id),
+            "resolution_note": "Approved budget update"
+        }
+        
+        approve_response = client.put(f"/api/v1/approvals/{approval_id}", json=approve_data)
+        
+        assert approve_response.status_code == 200
+        result = approve_response.json()
+        assert result["status"] == "success"
+        assert "execution_result" in result
+        
+        # 3. Verify the budget was updated
+        execution_result = result["execution_result"]
+        assert execution_result["amount"] == 1000.0
+        assert execution_result["period"] == "biweekly"
+        
+        # Also check in the database
+        db_session.refresh(budget)
+        assert budget.amount == 1000.0
+        assert budget.period == "biweekly"
 
 class TestApprovalSettingsIntegration:
     """Test the approval settings API endpoints with database integration."""
