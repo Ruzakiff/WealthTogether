@@ -168,19 +168,8 @@ def allocate_to_goal(db: Session, allocation_data: GoalAllocation, user_id: str)
     # If no approval required, proceed with allocation
     goal_result = allocate_to_goal_internal(db, allocation_data.model_dump(), user_id)
     
-    # Create a response dictionary with the expected fields
-    return {
-        "id": str(goal_result.id),
-        "couple_id": str(goal_result.couple_id),
-        "name": goal_result.name,
-        "target_amount": goal_result.target_amount,
-        "type": goal_result.type,
-        "current_allocation": goal_result.current_allocation,
-        "priority": goal_result.priority,
-        "deadline": goal_result.deadline,
-        "notes": goal_result.notes,
-        "created_at": goal_result.created_at
-    }
+    # Just return the dictionary as is since it's already properly formatted
+    return goal_result
 
 def allocate_to_goal_internal(db: Session, allocation_data: Dict[str, Any], user_id: str):
     """
@@ -211,23 +200,25 @@ def allocate_to_goal_internal(db: Session, allocation_data: Dict[str, Any], user
     # Update goal allocation
     goal.current_allocation += amount
     
-    # Create allocation map record
+    # Create allocation mapping
     allocation_map = AllocationMap(
         goal_id=goal_id,
         account_id=account_id,
         allocated_amount=amount
     )
     
-    # Create ledger event
+    # Create ledger event for the allocation
     event = LedgerEvent(
         event_type=LedgerEventType.ALLOCATION,
         amount=amount,
         source_account_id=account_id,
         dest_goal_id=goal_id,
         user_id=user_id,
-        timestamp=datetime.now(),
         event_metadata={
-            "note": f"Allocation to {goal.name}"
+            "goal_id": goal_id,
+            "goal_name": goal.name,
+            "account_id": account_id,
+            "account_name": account.name
         }
     )
     
@@ -240,7 +231,20 @@ def allocate_to_goal_internal(db: Session, allocation_data: Dict[str, Any], user
     db.commit()
     db.refresh(goal)
     
-    return goal
+    # Return a formatted response that matches the expected schema
+    return {
+        "id": goal.id,
+        "couple_id": goal.couple_id,
+        "name": goal.name,
+        "target_amount": goal.target_amount,
+        "type": goal.type,
+        "current_allocation": goal.current_allocation,
+        "priority": goal.priority,
+        "deadline": goal.deadline,
+        "notes": goal.notes,
+        "created_at": goal.created_at,
+        "modified_at": goal.modified_at if hasattr(goal, "modified_at") else None
+    }
 
 def reallocate_between_goals(
     db: Session, 
