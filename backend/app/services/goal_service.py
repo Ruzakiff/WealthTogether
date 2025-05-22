@@ -57,47 +57,48 @@ def create_financial_goal(db: Session, goal_data: FinancialGoalCreate):
 
 def create_financial_goal_internal(db: Session, goal_data: Dict[str, Any]):
     """
-    Internal function to create a financial goal without approval checks. 
+    Internal function to create a financial goal without approval checks.
     Used by approval system when executing approved requests.
     """
-    # Convert string to enum for type if needed
-    if isinstance(goal_data.get('type'), str):
-        from backend.app.models.models import GoalType
-        goal_data['type'] = GoalType(goal_data['type'])
+    # Convert string date to date object if needed
+    if goal_data.get('deadline') and isinstance(goal_data['deadline'], str):
+        try:
+            goal_data['deadline'] = date.fromisoformat(goal_data['deadline'])
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format for deadline")
     
-    # Create new financial goal
-    new_goal = FinancialGoal(
+    # Create the goal
+    goal = FinancialGoal(
+        id=str(uuid4()),
         couple_id=goal_data["couple_id"],
         name=goal_data["name"],
         target_amount=goal_data["target_amount"],
+        current_allocation=0.0,  # Always start with zero
         type=goal_data["type"],
-        current_allocation=0.0,  # Start with zero allocation
-        priority=goal_data.get("priority", 3),
+        priority=goal_data.get("priority", 1),
         deadline=goal_data.get("deadline"),
-        notes=goal_data.get("notes")
+        notes=goal_data.get("notes", "")
     )
     
-    # Add to database
-    db.add(new_goal)
+    db.add(goal)
     db.commit()
-    db.refresh(new_goal)
+    db.refresh(goal)
     
-    # Create a ledger event for goal creation
+    # Create a creation event
     log_event = LedgerEvent(
         event_type=LedgerEventType.SYSTEM,
-        amount=goal_data["target_amount"],
-        user_id=goal_data["created_by"],
+        user_id=goal_data.get("created_by"),
         event_metadata={
             "action": "goal_created",
-            "goal_id": str(new_goal.id),
-            "goal_name": new_goal.name,
-            "goal_type": str(new_goal.type)
+            "goal_id": goal.id,
+            "goal_name": goal.name,
+            "target_amount": goal.target_amount
         }
     )
     db.add(log_event)
     db.commit()
     
-    return new_goal
+    return goal
 
 def get_goals_by_couple(db: Session, couple_id: str) -> List[FinancialGoal]:
     """Get all financial goals for a couple"""
@@ -314,60 +315,84 @@ def reallocate_between_goals(
         "metadata": metadata or {}
     })
 
-def reallocate_between_goals_internal(db: Session, reallocation_data: Dict[str, Any]):
+def reallocate_between_goals_internal(db: Session, realloc_data: Dict[str, Any]):
     """
     Internal function to reallocate funds between goals without approval checks.
     Used by approval system when executing approved requests.
     """
-    source_goal_id = reallocation_data["source_goal_id"]
-    dest_goal_id = reallocation_data["dest_goal_id"]
-    amount = reallocation_data["amount"]
-    user_id = reallocation_data["user_id"]
-    metadata = reallocation_data.get("metadata", {})
+    # Extract data
+    source_goal_id = realloc_data.get("source_goal_id")
+    dest_goal_id = realloc_data.get("dest_goal_id")
+    amount = realloc_data.get("amount")
+    user_id = realloc_data.get("user_id")
+    metadata = realloc_data.get("metadata", {})
     
-    # Verify both goals exist
+    # Verify the source goal exists
     source_goal = db.query(FinancialGoal).filter(FinancialGoal.id == source_goal_id).first()
     if not source_goal:
         raise HTTPException(status_code=404, detail=f"Source goal with id {source_goal_id} not found")
     
+    # Verify the destination goal exists
     dest_goal = db.query(FinancialGoal).filter(FinancialGoal.id == dest_goal_id).first()
     if not dest_goal:
         raise HTTPException(status_code=404, detail=f"Destination goal with id {dest_goal_id} not found")
     
-    # Check if source goal has enough allocation
+    # Verify goals are from the same couple
+    if source_goal.couple_id != dest_goal.couple_id:
+        raise HTTPException(status_code=400, detail="Goals must belong to the same couple")
+    
+    # Verify sufficient funds
     if source_goal.current_allocation < amount:
         raise HTTPException(
             status_code=400, 
-            detail=f"Insufficient allocation in source goal. Available: {source_goal.current_allocation}, Requested: {amount}"
+            detail=f"Insufficient funds in source goal. Available: {source_goal.current_allocation}, Requested: {amount}"
         )
     
-    # Update allocations
+    # Perform the reallocation
     source_goal.current_allocation -= amount
     dest_goal.current_allocation += amount
     
-    # Create ledger event
-    log_event = LedgerEvent(
-        event_type=LedgerEventType.REALLOCATION,
-        amount=amount,
-        source_goal_id=source_goal_id,
-        dest_goal_id=dest_goal_id,
-        user_id=user_id,
-        event_metadata={
-            "action": "reallocate_funds",
-            "source_goal": source_goal.name,
-            "dest_goal": dest_goal.name,
-            **(metadata or {})
-        }
-    )
-    db.add(log_event)
+    # Create a ledger event for the reallocation
+    event_metadata = {
+        "action": "goal_reallocation",
+        "source_goal_id": source_goal.id,
+        "source_goal_name": source_goal.name,
+        "dest_goal_id": dest_goal.id,
+        "dest_goal_name": dest_goal.name,
+        "amount": amount
+    }
     
+    # Merge any additional metadata
+    if metadata:
+        event_metadata.update(metadata)
+    
+    log_event = LedgerEvent(
+        event_type=LedgerEventType.SYSTEM,
+        amount=amount,
+        user_id=user_id,
+        event_metadata=event_metadata
+    )
+    
+    db.add(log_event)
     db.commit()
+    
+    # Refresh the goals to get updated values
     db.refresh(source_goal)
     db.refresh(dest_goal)
     
     return {
-        "source_goal": source_goal,
-        "dest_goal": dest_goal,
+        "source_goal": {
+            "id": source_goal.id,
+            "name": source_goal.name,
+            "current_allocation": source_goal.current_allocation,
+            "target_amount": source_goal.target_amount
+        },
+        "dest_goal": {
+            "id": dest_goal.id,
+            "name": dest_goal.name,
+            "current_allocation": dest_goal.current_allocation,
+            "target_amount": dest_goal.target_amount
+        },
         "amount": amount
     }
 

@@ -311,30 +311,10 @@ def execute_approved_action(db: Session, approval: PendingApproval) -> Dict[str,
     
     elif action_type == ApprovalActionType.REALLOCATION.value:
         from backend.app.services.goal_service import reallocate_between_goals_internal
-        
-        # Add the user_id from the approval initiator
-        payload["user_id"] = approval.initiated_by
-        
+        # For reallocation, we need source_goal_id, dest_goal_id, amount, and user_id
         result = reallocate_between_goals_internal(db, payload)
         
-        # Format the response with both goals
-        if "source_goal" in result and "dest_goal" in result:
-            source_goal = result["source_goal"]
-            dest_goal = result["dest_goal"]
-            
-            return {
-                "source_goal": {
-                    "id": str(source_goal.id),
-                    "name": source_goal.name,
-                    "current_allocation": source_goal.current_allocation,
-                },
-                "dest_goal": {
-                    "id": str(dest_goal.id),
-                    "name": dest_goal.name,
-                    "current_allocation": dest_goal.current_allocation,
-                },
-                "amount": result["amount"]
-            }
+        # reallocate_between_goals_internal already returns a dictionary, so just return it
         return result
     
     elif action_type == ApprovalActionType.AUTO_RULE_CREATE.value:

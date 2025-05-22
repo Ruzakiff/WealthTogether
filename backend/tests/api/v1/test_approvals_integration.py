@@ -436,6 +436,255 @@ class TestApprovalsWorkflow:
         db_session.refresh(rule)
         assert rule.percent == 25.0
 
+    def test_goal_create_approval_workflow(self, client, setup_test_data, db_session):
+        """Test creating and approving a financial goal through approval workflow."""
+        data = setup_test_data
+        
+        # 1. Create an approval request for goal creation
+        today_str = date.today().isoformat()
+        approval_data = {
+            "couple_id": str(data["couple"].id),
+            "initiated_by": str(data["user1"].id),
+            "action_type": "goal_create",
+            "payload": {
+                "couple_id": str(data["couple"].id),
+                "name": "Vacation Fund",
+                "target_amount": 5000.0,
+                "type": GoalType.VACATION.value,
+                "priority": 1,
+                "deadline": today_str,
+                "notes": "Our dream vacation",
+                "created_by": str(data["user1"].id)
+            }
+        }
+        
+        create_response = client.post("/api/v1/approvals/", json=approval_data)
+        assert create_response.status_code == 200
+        approval = create_response.json()
+        approval_id = approval["id"]
+        
+        # 2. Approve the request as the partner
+        approve_data = {
+            "status": "approved",
+            "resolved_by": str(data["user2"].id),
+            "resolution_note": "Let's start saving!"
+        }
+        
+        approve_response = client.put(f"/api/v1/approvals/{approval_id}", json=approve_data)
+        
+        assert approve_response.status_code == 200
+        result = approve_response.json()
+        assert result["status"] == "success"
+        assert "execution_result" in result
+        
+        # 3. Verify the goal was created
+        execution_result = result["execution_result"]
+        assert execution_result["name"] == "Vacation Fund"
+        assert execution_result["target_amount"] == 5000.0
+        
+        # Also check in the database
+        goal = db_session.query(FinancialGoal).filter(
+            FinancialGoal.couple_id == data["couple"].id,
+            FinancialGoal.name == "Vacation Fund"
+        ).first()
+        
+        assert goal is not None
+        assert goal.target_amount == 5000.0
+
+    def test_goal_update_approval_workflow(self, client, setup_test_data, db_session):
+        """Test updating a financial goal through approval workflow."""
+        data = setup_test_data
+        
+        # Create a test goal first
+        goal = FinancialGoal(
+            id=str(uuid4()),
+            couple_id=data["couple"].id,
+            name="Test Goal",
+            target_amount=3000.0,
+            current_allocation=500.0,
+            type=GoalType.VACATION,
+            priority=2
+        )
+        
+        db_session.add(goal)
+        db_session.commit()
+        
+        # 1. Create an approval request for goal update
+        approval_data = {
+            "couple_id": str(data["couple"].id),
+            "initiated_by": str(data["user1"].id),
+            "action_type": "goal_update",
+            "payload": {
+                "goal_id": str(goal.id),
+                "name": "Updated Goal Name",
+                "target_amount": 5000.0,
+                "priority": 1
+            }
+        }
+        
+        create_response = client.post("/api/v1/approvals/", json=approval_data)
+        assert create_response.status_code == 200
+        approval = create_response.json()
+        approval_id = approval["id"]
+        
+        # 2. Approve the request as the partner
+        approve_data = {
+            "status": "approved",
+            "resolved_by": str(data["user2"].id),
+            "resolution_note": "Approved goal update"
+        }
+        
+        approve_response = client.put(f"/api/v1/approvals/{approval_id}", json=approve_data)
+        
+        assert approve_response.status_code == 200
+        result = approve_response.json()
+        assert result["status"] == "success"
+        assert "execution_result" in result
+        
+        # 3. Verify the goal was updated
+        execution_result = result["execution_result"]
+        assert execution_result["name"] == "Updated Goal Name"
+        assert execution_result["target_amount"] == 5000.0
+        
+        # Also check in the database
+        db_session.refresh(goal)
+        assert goal.name == "Updated Goal Name"
+        assert goal.target_amount == 5000.0
+        assert goal.priority == 1
+
+    def test_goal_allocation_approval_workflow(self, client, setup_test_data, db_session):
+        """Test allocating to a goal through approval workflow."""
+        data = setup_test_data
+        
+        # Create test account and goal
+        account = BankAccount(
+            id=str(uuid4()),
+            user_id=data["user1"].id,
+            name="Test Account",
+            balance=1000.0,
+            institution_name="Test Bank"
+        )
+        
+        goal = FinancialGoal(
+            id=str(uuid4()),
+            couple_id=data["couple"].id,
+            name="Test Goal",
+            target_amount=5000.0,
+            current_allocation=0.0,
+            type=GoalType.CUSTOM
+        )
+        
+        db_session.add(account)
+        db_session.add(goal)
+        db_session.commit()
+        
+        # 1. Create an approval request for goal allocation
+        approval_data = {
+            "couple_id": str(data["couple"].id),
+            "initiated_by": str(data["user1"].id),
+            "action_type": "allocation",
+            "payload": {
+                "account_id": str(account.id),
+                "goal_id": str(goal.id),
+                "amount": 500.0,
+                "user_id": str(data["user1"].id)
+            }
+        }
+        
+        create_response = client.post("/api/v1/approvals/", json=approval_data)
+        assert create_response.status_code == 200
+        approval = create_response.json()
+        approval_id = approval["id"]
+        
+        # 2. Approve the request as the partner
+        approve_data = {
+            "status": "approved",
+            "resolved_by": str(data["user2"].id),
+            "resolution_note": "Approved allocation"
+        }
+        
+        approve_response = client.put(f"/api/v1/approvals/{approval_id}", json=approve_data)
+        
+        assert approve_response.status_code == 200
+        result = approve_response.json()
+        assert result["status"] == "success"
+        assert "execution_result" in result
+        
+        # 3. Verify the allocation was made
+        db_session.refresh(goal)
+        assert goal.current_allocation == 500.0
+        
+        # Check account balance was reduced
+        db_session.refresh(account)
+        assert account.balance == 500.0  # Starting 1000 - 500 allocated
+
+    def test_goal_reallocation_approval_workflow(self, client, setup_test_data, db_session):
+        """Test reallocating between goals through approval workflow."""
+        data = setup_test_data
+        
+        # Create source and destination goals
+        source_goal = FinancialGoal(
+            id=str(uuid4()),
+            couple_id=data["couple"].id,
+            name="Source Goal",
+            target_amount=5000.0,
+            current_allocation=1000.0,
+            type=GoalType.VACATION,
+            priority=2
+        )
+        
+        dest_goal = FinancialGoal(
+            id=str(uuid4()),
+            couple_id=data["couple"].id,
+            name="Destination Goal",
+            target_amount=3000.0,
+            current_allocation=0.0,
+            type=GoalType.EMERGENCY,
+            priority=1
+        )
+        
+        db_session.add(source_goal)
+        db_session.add(dest_goal)
+        db_session.commit()
+        
+        # 1. Create an approval request for reallocation
+        approval_data = {
+            "couple_id": str(data["couple"].id),
+            "initiated_by": str(data["user1"].id),
+            "action_type": "reallocation",
+            "payload": {
+                "source_goal_id": str(source_goal.id),
+                "dest_goal_id": str(dest_goal.id),
+                "amount": 500.0,
+                "user_id": str(data["user1"].id)
+            }
+        }
+        
+        create_response = client.post("/api/v1/approvals/", json=approval_data)
+        assert create_response.status_code == 200
+        approval = create_response.json()
+        approval_id = approval["id"]
+        
+        # 2. Approve the request as the partner
+        approve_data = {
+            "status": "approved",
+            "resolved_by": str(data["user2"].id),
+            "resolution_note": "Approved reallocation"
+        }
+        
+        approve_response = client.put(f"/api/v1/approvals/{approval_id}", json=approve_data)
+        
+        assert approve_response.status_code == 200
+        result = approve_response.json()
+        assert result["status"] == "success"
+        assert "execution_result" in result
+        
+        # 3. Verify the reallocation occurred
+        db_session.refresh(source_goal)
+        db_session.refresh(dest_goal)
+        assert source_goal.current_allocation == 500.0  # 1000 - 500
+        assert dest_goal.current_allocation == 500.0    # 0 + 500
+
 class TestApprovalSettingsIntegration:
     """Test the approval settings API endpoints with database integration."""
     
