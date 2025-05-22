@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from backend.app.api.v1 import users, couples, accounts, goals, ledger, transactions, categories, plaid, budgets, rebalance, surplus, ai, forecast, allocation_rules, approvals
 from backend.app.api.v1.journal import router as journal_router
 from backend.app.api.v1.reactions import router as reactions_router
+from backend.app.api.v1.timeline import router as timeline_router
 
 api_router = APIRouter()
 api_router.include_router(users.router, prefix="/users", tags=["users"])
@@ -21,6 +22,7 @@ api_router.include_router(allocation_rules.router, prefix="/allocation-rules", t
 api_router.include_router(journal_router, prefix="/journal", tags=["journal"])
 api_router.include_router(reactions_router, prefix="/goals/reactions", tags=["reactions"])
 api_router.include_router(approvals.router, prefix="/approvals", tags=["approvals"])
+api_router.include_router(timeline_router, prefix="/timeline", tags=["Timeline"])
 
 # Uncomment these as you implement each module
 # api_router.include_router(goals.router, prefix="/goals", tags=["goals"])
