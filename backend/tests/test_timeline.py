@@ -43,7 +43,7 @@ def timeline_test_data(db_session, test_user, test_user2, test_couple, test_goal
         event_type=LedgerEventType.DEPOSIT,
         amount=500.0,
         user_id=test_user2.id,
-        source_account_id=test_account.id,  # Add this link to make sure it's found
+        source_account_id=test_account.id,
         timestamp=datetime.utcnow() - timedelta(days=2),
         event_metadata={"source": "Paycheck"}
     )
@@ -113,7 +113,7 @@ def test_get_timeline(client, test_couple, timeline_test_data):
 def test_get_timeline_with_filters(client, test_couple, test_user, test_goal, timeline_test_data):
     """Test getting the timeline with various filters"""
     
-    # Test filtering by item type - Fix: Use a list format
+    # Test filtering by item type
     response = client.get(
         f"/api/v1/timeline/?couple_id={test_couple.id}&item_types=ledger_event"
     )
@@ -197,6 +197,71 @@ def test_get_timeline_milestone_only(client, test_couple, db_session, test_user,
     data = response.json()
     assert len(data) == 1
     assert data[0]["is_milestone"] == True
+
+def test_get_timeline_celebration_only(client, test_couple, db_session, test_user2, test_goal):
+    """Test getting only celebration events"""
+    
+    # Create a celebration reaction
+    celebration_reaction = GoalReaction(
+        user_id=test_user2.id,
+        goal_id=test_goal.id,
+        reaction_type="love",
+        note="Let's celebrate this amazing achievement!",
+        timestamp=datetime.utcnow()
+    )
+    db_session.add(celebration_reaction)
+    db_session.commit()
+    
+    # Get only celebration events
+    response = client.get(
+        f"/api/v1/timeline/?couple_id={test_couple.id}&celebration_only=true"
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) >= 1  # Should include the celebration reaction and potentially others
+    assert all(item["is_celebration"] == True for item in data)
+
+def test_timeline_includes_private_entries(client, test_couple, db_session, test_user):
+    """Test that private journal entries are only included when requested"""
+    
+    # Create a private journal entry
+    private_entry = JournalEntry(
+        user_id=test_user.id,
+        couple_id=test_couple.id,
+        entry_type="concern",
+        content="I'm worried about our spending habits",
+        is_private=True,
+        timestamp=datetime.utcnow()
+    )
+    db_session.add(private_entry)
+    db_session.commit()
+    
+    # Without include_private flag
+    response = client.get(
+        f"/api/v1/timeline/?couple_id={test_couple.id}"
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    private_items = [item for item in data if 
+                    item["item_type"] == TimelineItemType.JOURNAL_ENTRY and 
+                    "is_private" in item["metadata"] and 
+                    item["metadata"]["is_private"] == True]
+    assert len(private_items) == 0
+    
+    # With include_private flag
+    response = client.get(
+        f"/api/v1/timeline/?couple_id={test_couple.id}&include_private=true"
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    private_items = [item for item in data if 
+                    item["item_type"] == TimelineItemType.JOURNAL_ENTRY and 
+                    "is_private" in item["metadata"] and 
+                    item["metadata"]["is_private"] == True]
+    assert len(private_items) == 1
 
 def test_get_timeline_summary(client, test_couple, timeline_test_data):
     """Test getting the timeline summary"""
