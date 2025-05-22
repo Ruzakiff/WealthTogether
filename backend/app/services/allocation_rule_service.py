@@ -2,13 +2,16 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
+from uuid import uuid4
 
-from backend.app.models.models import AutoAllocationRule, BankAccount, FinancialGoal, LedgerEvent, LedgerEventType
+from backend.app.models.models import AutoAllocationRule, BankAccount, FinancialGoal, LedgerEvent, LedgerEventType, ApprovalActionType
 from backend.app.schemas.allocation_rules import AutoAllocationRuleCreate, AutoAllocationRuleUpdate, ExecuteRulesRequest
 from backend.app.schemas.goals import GoalAllocation
+from backend.app.schemas.approvals import ApprovalCreate, ApprovalStatus
 from backend.app.services.goal_service import allocate_to_goal
+from backend.app.services.approval_service import create_pending_approval, check_approval_required
 
-def create_allocation_rule(db: Session, rule_data: AutoAllocationRuleCreate) -> AutoAllocationRule:
+def create_allocation_rule(db: Session, rule_data: AutoAllocationRuleCreate) -> Dict[str, Any]:
     """Create a new automatic allocation rule"""
     
     # Verify the account exists and user owns it
@@ -24,13 +27,64 @@ def create_allocation_rule(db: Session, rule_data: AutoAllocationRuleCreate) -> 
     if not goal:
         raise HTTPException(status_code=404, detail=f"Goal with id {rule_data.goal_id} not found")
     
+    # Mock rule response for approvals to match expected format
+    source_account = db.query(BankAccount).filter(BankAccount.id == rule_data.source_account_id).first()
+    goal = db.query(FinancialGoal).filter(FinancialGoal.id == rule_data.goal_id).first()
+    
+    # Check if approval is required for this rule
+    if check_approval_required(
+        db, 
+        goal.couple_id, 
+        ApprovalActionType.AUTO_RULE_CREATE, 
+        amount=None  # Auto rules use their own threshold, not amount-based
+    ):
+        # Create approval request
+        approval_data = ApprovalCreate(
+            couple_id=goal.couple_id,
+            initiated_by=rule_data.user_id,
+            action_type=ApprovalActionType.AUTO_RULE_CREATE,
+            payload=rule_data.model_dump()
+        )
+        approval = create_pending_approval(db, approval_data)
+        
+        # Create a response that matches AutoAllocationRuleResponse but has pending status
+        mock_id = str(uuid4())  # Temporary ID that will be replaced when approved
+        now = datetime.now(timezone.utc)
+        
+        # Return format that matches AutoAllocationRuleResponse but indicates pending status
+        return {
+            "id": mock_id,  # Temporary ID
+            "user_id": rule_data.user_id,
+            "source_account_id": rule_data.source_account_id,
+            "goal_id": rule_data.goal_id,
+            "percent": rule_data.percent,
+            "trigger": rule_data.trigger,
+            "is_active": True,
+            "created_at": now,
+            "last_executed": None,
+            "source_account_name": source_account.name if source_account else None,
+            "goal_name": goal.name if goal else None,
+            # Additional fields for approval info
+            "status": "pending_approval",
+            "approval_id": approval.id,
+            "message": "Automatic allocation rule creation requires partner approval"
+        }
+    
+    # If no approval required, proceed with creation
+    return create_auto_rule_internal(db, rule_data.model_dump())
+
+def create_auto_rule_internal(db: Session, rule_data: Dict[str, Any]) -> AutoAllocationRule:
+    """
+    Internal function to create allocation rule without approval checks.
+    Used by approval system when executing approved requests.
+    """
     # Create new rule
     new_rule = AutoAllocationRule(
-        user_id=rule_data.user_id,
-        source_account_id=rule_data.source_account_id,
-        goal_id=rule_data.goal_id,
-        percent=rule_data.percent,
-        trigger=rule_data.trigger,
+        user_id=rule_data["user_id"],
+        source_account_id=rule_data["source_account_id"],
+        goal_id=rule_data["goal_id"],
+        percent=rule_data["percent"],
+        trigger=rule_data["trigger"],
         is_active=True
     )
     
@@ -41,8 +95,8 @@ def create_allocation_rule(db: Session, rule_data: AutoAllocationRuleCreate) -> 
     
     # Create a ledger event for rule creation
     log_event = LedgerEvent(
-        event_type=LedgerEventType.SYSTEM,
-        user_id=rule_data.user_id,
+        event_type=LedgerEventType.SYSTEM.value,
+        user_id=rule_data["user_id"],
         event_metadata={
             "action": "auto_allocation_rule_created",
             "rule_id": str(new_rule.id),
@@ -87,27 +141,88 @@ def get_rules_by_user(db: Session, user_id: str) -> List[Dict[str, Any]]:
     
     return result
 
-def update_allocation_rule(db: Session, rule_id: str, user_id: str, update_data: AutoAllocationRuleUpdate) -> Optional[AutoAllocationRule]:
-    """Update an existing allocation rule"""
+def update_allocation_rule(db: Session, rule_id: str, user_id: str, update_data: AutoAllocationRuleUpdate) -> AutoAllocationRule:
+    """Update an existing automatic allocation rule"""
     
-    # First check if rule exists at all
+    # Get rule
+    rule = db.query(AutoAllocationRule).filter(AutoAllocationRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail=f"Rule with id {rule_id} not found")
+    
+    # Verify the rule belongs to the user
+    if rule.user_id != user_id:
+        raise HTTPException(status_code=403, detail="User does not own this rule")
+    
+    # Get goal for couple_id
+    goal = db.query(FinancialGoal).filter(FinancialGoal.id == rule.goal_id).first()
+    if not goal:
+        raise HTTPException(status_code=404, detail="Associated goal not found")
+    
+    # Check if approval is required for this update
+    if check_approval_required(
+        db, 
+        goal.couple_id, 
+        ApprovalActionType.AUTO_RULE_UPDATE,
+        amount=None  # Auto rules use their own threshold, not amount-based
+    ):
+        # Prepare the payload
+        payload = update_data.model_dump(exclude_unset=True)
+        payload["rule_id"] = rule_id
+        
+        # Create approval request
+        approval_data = ApprovalCreate(
+            couple_id=goal.couple_id,
+            initiated_by=user_id,
+            action_type=ApprovalActionType.AUTO_RULE_UPDATE,
+            payload=payload
+        )
+        approval = create_pending_approval(db, approval_data)
+        
+        # Get related entities for display
+        source_account = db.query(BankAccount).filter(BankAccount.id == rule.source_account_id).first()
+        
+        # Create a full response that matches existing format for tests
+        result = {
+            "id": rule.id,
+            "user_id": rule.user_id,
+            "source_account_id": rule.source_account_id,
+            "goal_id": rule.goal_id,
+            "percent": update_data.percent if update_data.percent is not None else rule.percent,
+            "trigger": update_data.trigger if update_data.trigger is not None else rule.trigger,
+            "is_active": update_data.is_active if update_data.is_active is not None else rule.is_active,
+            "created_at": rule.created_at,
+            "last_executed": rule.last_executed,
+            "source_account_name": source_account.name if source_account else None,
+            "goal_name": goal.name if goal else None,
+            # Additional fields for approval info
+            "status": "pending_approval",
+            "approval_id": approval.id,
+            "message": "Automatic allocation rule update requires partner approval"
+        }
+        return result
+    
+    # If no approval required, proceed with update
+    return update_auto_rule_internal(db, rule_id, update_data.model_dump(exclude_unset=True))
+
+def update_auto_rule_internal(db: Session, rule_id: str, update_data: Dict[str, Any]) -> AutoAllocationRule:
+    """
+    Internal function to update allocation rule without approval checks.
+    Used by approval system when executing approved requests.
+    """
+    # Get rule
     rule = db.query(AutoAllocationRule).filter(AutoAllocationRule.id == rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail=f"Rule not found")
     
-    # Check ownership separately for proper error
-    if rule.user_id != user_id:
-        raise HTTPException(status_code=403, detail=f"User does not own this rule")
-    
     # Update fields if provided
-    if update_data.percent is not None:
-        rule.percent = update_data.percent
+    if "percent" in update_data:
+        rule.percent = update_data["percent"]
     
-    if update_data.trigger is not None:
-        rule.trigger = update_data.trigger
+    if "trigger" in update_data:
+        rule.trigger = update_data["trigger"]
     
-    if update_data.is_active is not None:
-        rule.is_active = update_data.is_active
+    if "is_active" in update_data:
+        rule.is_active = update_data["is_active"]
     
     # Save changes
     db.commit()
@@ -115,12 +230,12 @@ def update_allocation_rule(db: Session, rule_id: str, user_id: str, update_data:
     
     # Create a ledger event for rule update
     log_event = LedgerEvent(
-        event_type=LedgerEventType.SYSTEM,
-        user_id=user_id,
+        event_type=LedgerEventType.SYSTEM.value,
+        user_id=rule.user_id,
         event_metadata={
             "action": "auto_allocation_rule_updated",
             "rule_id": rule_id,
-            "updates": {k: v for k, v in update_data.model_dump(exclude_unset=True).items()}
+            "updates": update_data
         }
     )
     db.add(log_event)

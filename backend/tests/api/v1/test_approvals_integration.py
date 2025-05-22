@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from backend.app.main import app
 from backend.app.database import get_db_session
-from backend.app.models.models import Base, User, Couple, PendingApproval, ApprovalSettings, ApprovalStatus, ApprovalActionType, Category
+from backend.app.models.models import Base, User, Couple, PendingApproval, ApprovalSettings, ApprovalStatus, ApprovalActionType, Category, BankAccount, FinancialGoal, GoalType, AutoAllocationRule
 
 # Create an in-memory SQLite database for testing
 TEST_SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -283,6 +283,158 @@ class TestApprovalsWorkflow:
         
         assert response.status_code == 404
         assert "Approval not found" in response.json()["detail"]
+
+    def test_auto_rule_create_approval_workflow(self, client, setup_test_data, db_session):
+        """Test creating and approving an auto allocation rule through approval workflow."""
+        data = setup_test_data
+        
+        # Create a test account and goal for our rule
+        account = BankAccount(
+            id=str(uuid4()),
+            user_id=data["user1"].id,
+            name="Test Account",
+            balance=1000.0,
+            institution_name="Test Bank"
+        )
+        
+        goal = FinancialGoal(
+            id=str(uuid4()),
+            couple_id=data["couple"].id,
+            name="Test Goal",
+            target_amount=5000.0,
+            current_allocation=0.0,
+            type=GoalType.CUSTOM
+        )
+        
+        db_session.add(account)
+        db_session.add(goal)
+        db_session.commit()
+        
+        # 1. Create an approval request for auto rule creation
+        approval_data = {
+            "couple_id": str(data["couple"].id),
+            "initiated_by": str(data["user1"].id),
+            "action_type": "auto_rule_create",
+            "payload": {
+                "user_id": str(data["user1"].id),
+                "source_account_id": str(account.id),
+                "goal_id": str(goal.id),
+                "percent": 20.0,
+                "trigger": "deposit"
+            }
+        }
+        
+        create_response = client.post("/api/v1/approvals/", json=approval_data)
+        assert create_response.status_code == 200
+        approval = create_response.json()
+        approval_id = approval["id"]
+        
+        # 2. Approve the request as the partner
+        approve_data = {
+            "status": "approved",
+            "resolved_by": str(data["user2"].id),
+            "resolution_note": "Looks good!"
+        }
+        
+        approve_response = client.put(f"/api/v1/approvals/{approval_id}", json=approve_data)
+        
+        assert approve_response.status_code == 200
+        result = approve_response.json()
+        assert result["status"] == "success"
+        assert "execution_result" in result
+        
+        # 3. Verify the rule was created
+        execution_result = result["execution_result"]
+        assert execution_result["user_id"] == str(data["user1"].id)
+        assert execution_result["source_account_id"] == str(account.id)
+        assert execution_result["goal_id"] == str(goal.id)
+        assert execution_result["percent"] == 20.0
+        
+        # Also check in the database
+        rule = db_session.query(AutoAllocationRule).filter(
+            AutoAllocationRule.user_id == data["user1"].id,
+            AutoAllocationRule.goal_id == goal.id
+        ).first()
+        
+        assert rule is not None
+        assert rule.percent == 20.0
+    
+    def test_auto_rule_update_approval_workflow(self, client, setup_test_data, db_session):
+        """Test updating an auto allocation rule through approval workflow."""
+        data = setup_test_data
+        
+        # Create test account, goal and rule
+        account = BankAccount(
+            id=str(uuid4()),
+            user_id=data["user1"].id,
+            name="Test Account",
+            balance=1000.0,
+            institution_name="Test Bank"
+        )
+        
+        goal = FinancialGoal(
+            id=str(uuid4()),
+            couple_id=data["couple"].id,
+            name="Test Goal",
+            target_amount=5000.0,
+            current_allocation=0.0,
+            type=GoalType.CUSTOM
+        )
+        
+        # Create the rule directly first
+        rule = AutoAllocationRule(
+            id=str(uuid4()),
+            user_id=data["user1"].id,
+            source_account_id=account.id,
+            goal_id=goal.id,
+            percent=10.0,
+            trigger="deposit",
+            is_active=True
+        )
+        
+        db_session.add(account)
+        db_session.add(goal)
+        db_session.add(rule)
+        db_session.commit()
+        
+        # 1. Create an approval request for rule update
+        approval_data = {
+            "couple_id": str(data["couple"].id),
+            "initiated_by": str(data["user1"].id),
+            "action_type": "auto_rule_update",
+            "payload": {
+                "rule_id": str(rule.id),
+                "percent": 25.0,
+                "is_active": True
+            }
+        }
+        
+        create_response = client.post("/api/v1/approvals/", json=approval_data)
+        assert create_response.status_code == 200
+        approval = create_response.json()
+        approval_id = approval["id"]
+        
+        # 2. Approve the request as the partner
+        approve_data = {
+            "status": "approved",
+            "resolved_by": str(data["user2"].id),
+            "resolution_note": "Approved rule update"
+        }
+        
+        approve_response = client.put(f"/api/v1/approvals/{approval_id}", json=approve_data)
+        
+        assert approve_response.status_code == 200
+        result = approve_response.json()
+        assert result["status"] == "success"
+        assert "execution_result" in result
+        
+        # 3. Verify the rule was updated
+        execution_result = result["execution_result"]
+        assert execution_result["percent"] == 25.0
+        
+        # Also check in the database
+        db_session.refresh(rule)
+        assert rule.percent == 25.0
 
 class TestApprovalSettingsIntegration:
     """Test the approval settings API endpoints with database integration."""

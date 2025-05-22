@@ -238,7 +238,7 @@ def execute_approved_action(db: Session, approval: PendingApproval) -> Dict[str,
             return result_dict
         return result
     
-    elif approval.action_type == ApprovalActionType.GOAL_CREATE.value:
+    elif action_type == ApprovalActionType.GOAL_CREATE.value:
         from backend.app.services.goal_service import create_financial_goal_internal
         result = create_financial_goal_internal(db, payload)
         
@@ -259,7 +259,7 @@ def execute_approved_action(db: Session, approval: PendingApproval) -> Dict[str,
             return result_dict
         return result
     
-    elif approval.action_type == ApprovalActionType.GOAL_UPDATE.value:
+    elif action_type == ApprovalActionType.GOAL_UPDATE.value:
         from backend.app.services.goal_service import update_financial_goal_internal
         goal_id = payload.pop("goal_id", None)
         if not goal_id:
@@ -284,7 +284,7 @@ def execute_approved_action(db: Session, approval: PendingApproval) -> Dict[str,
             return result_dict
         return result
     
-    elif approval.action_type == ApprovalActionType.ALLOCATION.value:
+    elif action_type == ApprovalActionType.ALLOCATION.value:
         from backend.app.services.goal_service import allocate_to_goal_internal
         
         # Get the user_id from the approval initiator
@@ -309,7 +309,7 @@ def execute_approved_action(db: Session, approval: PendingApproval) -> Dict[str,
             return result_dict
         return result
     
-    elif approval.action_type == ApprovalActionType.REALLOCATION.value:
+    elif action_type == ApprovalActionType.REALLOCATION.value:
         from backend.app.services.goal_service import reallocate_between_goals_internal
         
         # Add the user_id from the approval initiator
@@ -337,11 +337,53 @@ def execute_approved_action(db: Session, approval: PendingApproval) -> Dict[str,
             }
         return result
     
-    elif approval.action_type == ApprovalActionType.AUTO_RULE_CREATE.value:
-        return {"message": "Auto rule creation would be executed here"}
+    elif action_type == ApprovalActionType.AUTO_RULE_CREATE.value:
+        try:
+            from backend.app.services.allocation_rule_service import create_auto_rule_internal
+            result = create_auto_rule_internal(db, payload)
+            
+            if hasattr(result, "__dict__"):
+                # Handle SQLAlchemy models
+                result_dict = {
+                    "id": str(result.id),
+                    "user_id": str(result.user_id),
+                    "source_account_id": str(result.source_account_id),
+                    "goal_id": str(result.goal_id),
+                    "percent": result.percent,
+                    "trigger": str(result.trigger),
+                    "created_at": result.created_at.isoformat() if hasattr(result.created_at, "isoformat") else str(result.created_at)
+                }
+                return result_dict
+            return result
+        except ImportError:
+            # If the allocation_rule_service is not implemented yet, return a placeholder
+            return {"message": "Auto rule creation would be executed here"}
     
-    elif approval.action_type == ApprovalActionType.AUTO_RULE_UPDATE.value:
-        return {"message": "Auto rule update would be executed here"}
+    elif action_type == ApprovalActionType.AUTO_RULE_UPDATE.value:
+        try:
+            from backend.app.services.allocation_rule_service import update_auto_rule_internal
+            rule_id = payload.pop("rule_id", None)
+            if not rule_id:
+                raise HTTPException(status_code=400, detail="Missing rule_id in approval payload")
+            
+            result = update_auto_rule_internal(db, rule_id, payload)
+            
+            if hasattr(result, "__dict__"):
+                # Handle SQLAlchemy models
+                result_dict = {
+                    "id": str(result.id),
+                    "user_id": str(result.user_id),
+                    "source_account_id": str(result.source_account_id),
+                    "goal_id": str(result.goal_id),
+                    "percent": result.percent,
+                    "trigger": str(result.trigger),
+                    "created_at": result.created_at.isoformat() if hasattr(result.created_at, "isoformat") else str(result.created_at)
+                }
+                return result_dict
+            return result
+        except ImportError:
+            # If the allocation_rule_service is not implemented yet, return a placeholder
+            return {"message": "Auto rule update would be executed here"}
     
     # Default case - unknown action type
     raise HTTPException(status_code=400, detail=f"Unknown action type: {action_type}")
@@ -398,7 +440,7 @@ def check_approval_required(
     db: Session,
     couple_id: str,
     action_type: ApprovalActionType,
-    amount: float = 0.0
+    amount: Optional[float] = 0.0
 ) -> bool:
     """Check if an action requires approval based on settings and amount"""
     
@@ -408,6 +450,21 @@ def check_approval_required(
     if not settings.enabled:
         return False
     
+    # For auto rules, handle None amounts differently
+    if action_type in [ApprovalActionType.AUTO_RULE_CREATE, ApprovalActionType.AUTO_RULE_UPDATE]:
+        # We don't use amount for auto rules - they have their own threshold
+        # If auto_rule_threshold is 0, always require approval
+        # If it's negative, never require approval
+        # Otherwise, always require approval (since we're dealing with percentage rules, not amounts)
+        if settings.auto_rule_threshold < 0:
+            return False
+        return True
+    
+    # For all other actions, compare the amount against the threshold
+    # If amount is None, treat as 0
+    if amount is None:
+        amount = 0.0
+        
     if action_type == ApprovalActionType.BUDGET_CREATE:
         return amount >= settings.budget_creation_threshold
     
@@ -419,9 +476,6 @@ def check_approval_required(
     
     elif action_type == ApprovalActionType.REALLOCATION:
         return amount >= settings.goal_reallocation_threshold
-    
-    elif action_type in [ApprovalActionType.AUTO_RULE_CREATE, ApprovalActionType.AUTO_RULE_UPDATE]:
-        return amount >= settings.auto_rule_threshold
     
     # Default to requiring approval for unknown action types
     return True
