@@ -110,7 +110,6 @@ def get_goals_by_couple(db: Session, couple_id: str) -> List[FinancialGoal]:
     
     # Return all goals for this couple
     return db.query(FinancialGoal).filter(FinancialGoal.couple_id == couple_id).all()
-
 def allocate_to_goal(db: Session, allocation_data: GoalAllocation, user_id: str):
     """Service function to allocate funds to a goal"""
     
@@ -168,6 +167,28 @@ def allocate_to_goal(db: Session, allocation_data: GoalAllocation, user_id: str)
     
     # If no approval required, proceed with allocation
     goal_result = allocate_to_goal_internal(db, allocation_data.model_dump(), user_id)
+    
+    # Check for milestones
+    from backend.app.services.timeline_service import detect_milestones
+    
+    milestone = detect_milestones(db, allocation_data.goal_id, allocation_data.amount)
+    if milestone:
+        # Create milestone event for timeline
+        milestone_event = LedgerEvent(
+            event_type=LedgerEventType.SYSTEM,
+            amount=0.0,  # No financial impact
+            user_id=user_id,
+            dest_goal_id=allocation_data.goal_id,
+            event_metadata={
+                "action": "goal_milestone",
+                "milestone_type": milestone["type"],
+                "percentage": milestone["percentage"],
+                "goal_name": goal.name,
+                "is_milestone": True
+            }
+        )
+        db.add(milestone_event)
+        db.commit()
     
     # Just return the dictionary as is since it's already properly formatted
     return goal_result

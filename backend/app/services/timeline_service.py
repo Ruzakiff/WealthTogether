@@ -131,6 +131,33 @@ def get_timeline_feed(
                         item["title"] = "Approval Activity"
                         item["description"] = event.event_metadata.get("summary", "Approval action")
                         item["icon"] = "✅"
+                    elif action == "journal_entry_created":
+                        item["item_type"] = TimelineItemType.JOURNAL_ENTRY
+                        item["title"] = f"New {event.event_metadata.get('entry_type', 'Journal')} Entry"
+                        item["description"] = event.event_metadata.get('title', 'Journal entry added')
+                        item["icon"] = "📝"
+                        item["related_goal_id"] = event.event_metadata.get('goal_id')
+                        
+                        # If it's a celebration, mark as celebration
+                        if event.event_metadata.get('entry_type') == "CELEBRATION":
+                            item["is_celebration"] = True
+                            item["icon"] = "🎉"
+                        
+                        # If it's a concern, use different icon
+                        if event.event_metadata.get('entry_type') == "CONCERN":
+                            item["icon"] = "⚠️"
+                    elif action == "journal_entry_updated":
+                        item["item_type"] = TimelineItemType.JOURNAL_ENTRY
+                        item["title"] = "Journal Entry Updated"
+                        item["description"] = event.event_metadata.get('title', 'Journal entry updated')
+                        item["icon"] = "✏️"
+                        item["related_goal_id"] = event.event_metadata.get('goal_id')
+                    elif action == "journal_entry_deleted":
+                        item["item_type"] = TimelineItemType.JOURNAL_ENTRY
+                        item["title"] = "Journal Entry Deleted" 
+                        item["description"] = f"A {event.event_metadata.get('entry_type', 'journal')} entry was removed"
+                        item["icon"] = "🗑️"
+                        item["related_goal_id"] = event.event_metadata.get('goal_id')
                     else:
                         item["title"] = "System Event"
                         item["description"] = "System event occurred"
@@ -287,6 +314,28 @@ def get_timeline_feed(
     
     # Sort by timestamp descending (newest first)
     timeline_items.sort(key=lambda x: x.timestamp, reverse=True)
+    
+    # Filter private journal entries according to settings
+    if not filter_options.include_private:
+        # When include_private is False, filter out all private entries
+        timeline_items = [
+            item for item in timeline_items 
+            if not (item.item_type == TimelineItemType.JOURNAL_ENTRY and 
+                    item.metadata.get('is_private', False))
+        ]
+    else:
+        # When include_private is True:
+        # - Include all non-private entries
+        # - Include private entries only from the requesting user
+        # - Filter out other users' private entries
+        if filter_options.user_id:
+            timeline_items = [
+                item for item in timeline_items 
+                if not (item.item_type == TimelineItemType.JOURNAL_ENTRY and 
+                        item.metadata.get('is_private', False) and 
+                        item.user_id != filter_options.user_id)
+            ]
+        # If no specific user_id filter, don't filter private entries (for admin views)
     
     # Apply pagination
     paginated_items = timeline_items[offset:offset + limit]

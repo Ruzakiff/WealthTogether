@@ -49,22 +49,26 @@ def create_journal_entry(db: Session, entry_data: JournalEntryCreate) -> Journal
     db.commit()
     db.refresh(new_entry)
     
-    # Create a ledger event for this entry
+    # Create a ledger event for this entry with timeline-friendly metadata
     log_event = LedgerEvent(
         event_type=LedgerEventType.SYSTEM,
         user_id=entry_data.user_id,
+        dest_goal_id=entry_data.goal_id,  # Link to goal if specified
         event_metadata={
             "action": "journal_entry_created",
             "entry_id": str(new_entry.id),
             "entry_type": str(new_entry.entry_type),
             "goal_id": str(new_entry.goal_id) if new_entry.goal_id else None,
-            "is_private": new_entry.is_private
+            "is_private": new_entry.is_private,
+            "title": entry_data.content[:50] + ("..." if len(entry_data.content) > 50 else ""),
+            "for_timeline": True  # Flag for timeline service to identify timeline-relevant events
         }
     )
     db.add(log_event)
     db.commit()
     
     return new_entry
+
 def get_journal_entries(db: Session, filters: JournalEntryFilter, requesting_user_id: str) -> List[JournalEntry]:
     """Get journal entries with filters"""
     
@@ -178,13 +182,18 @@ def update_journal_entry(db: Session, entry_id: str, update_data: JournalEntryUp
     db.commit()
     db.refresh(entry)
     
-    # Create log entry
+    # Create log entry for timeline
     log_event = LedgerEvent(
         event_type=LedgerEventType.SYSTEM,
         user_id=requesting_user_id,
+        dest_goal_id=entry.goal_id,  # Link to goal if specified
         event_metadata={
             "action": "journal_entry_updated",
-            "entry_id": str(entry.id)
+            "entry_id": str(entry.id),
+            "entry_type": str(entry.entry_type),
+            "is_private": entry.is_private,
+            "title": entry.content[:50] + ("..." if len(entry.content) > 50 else ""),
+            "for_timeline": True  # Flag for timeline service
         }
     )
     db.add(log_event)
@@ -203,20 +212,22 @@ def delete_journal_entry(db: Session, entry_id: str, requesting_user_id: str) ->
     if entry.user_id != requesting_user_id:
         raise HTTPException(status_code=403, detail="Only the author can delete a journal entry")
     
-    # Delete the entry
-    db.delete(entry)
-    
-    # Create log entry
+    # Create log entry for timeline before deleting the entry
     log_event = LedgerEvent(
         event_type=LedgerEventType.SYSTEM,
         user_id=requesting_user_id,
+        dest_goal_id=entry.goal_id,  # Link to goal if specified
         event_metadata={
             "action": "journal_entry_deleted",
             "entry_id": str(entry.id),
-            "entry_type": str(entry.entry_type)
+            "entry_type": str(entry.entry_type),
+            "for_timeline": True  # Flag for timeline service
         }
     )
     db.add(log_event)
+    
+    # Delete the entry
+    db.delete(entry)
     db.commit()
     
     return {"success": True, "message": "Journal entry deleted"} 
